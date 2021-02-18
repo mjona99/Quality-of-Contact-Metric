@@ -1,0 +1,199 @@
+---
+title: "Creating QC+ Part 2 - Feature Engineering and Selection"
+output: html_notebook
+---
+
+In this notebook, I will focus on feature engineering and data-preprocessing. Feature engineering is defined as "the process of using domain knowledge to extract features from raw data via data mining techniques." I will be adding some new features (spray angle, batter pitcher matchup, and shifting information), but a majority of my focus will be to get the data ready for modeling. Modeling will take place in the next notebook. Additionally, thanks to the baseballr package I will be adding venue and temperature variables.
+
+```{r message=FALSE, warning=FALSE}
+library(baseballr)
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(ggthemes)
+library(patchwork)
+library(arm)
+library(blme)
+library(lme4)
+library(xgboost)
+library(ggrepel)
+library(fastDummies)
+```
+
+```{r}
+batted_ball_cleaned <- read_csv("batted_ball_cleaned_v2.csv")
+```
+
+
+# Feature Engineering
+
+Adding the pitcher's name. 
+```{r}
+# player look up by mlbam key
+chadwick_reduced <- chadwick_player_lu_table %>% dplyr::select(key_mlbam, name_last, name_first)
+# remove NA to make df smaller
+chadwick_reduced <- chadwick_reduced[!is.na(chadwick_reduced$key_mlbam),]
+# getting each catcher's name
+batted_ball_processed <- merge(x = batted_ball_processed, y = chadwick_reduced, by.x = "pitcher", by.y = "key_mlbam")
+batted_ball_processed %<>%
+  mutate(batted_ball_processed, pitcher_name = paste(name_first, name_last, sep = " ")) %>%
+  dplyr::select(-c(name_last, name_first, pitcher))
+```
+
+
+Adding what team the batter is. Will be used for metric validation later.
+```{r}
+batted_ball_processed %<>%
+  mutate(batter_team = ifelse(inning_topbot == "Top", away_team, home_team))
+```
+
+
+Next, I'm going to change the pitch type groupings. I'm considering a knuckle curve to be a regular curveball, a splitter to be a change-up, and a sinker to be a two-seam fastball. Lastly, I'm grouping together knuckle balls, screwballs, forkballs, eephus, etc. into one over-arching 'other' category. 
+```{r}
+batted_ball_processed$pitch_type[batted_ball_processed$pitch_type == 'KC'] <- 'CU'
+batted_ball_processed$pitch_type[batted_ball_processed$pitch_type == 'FS'] <- 'CH'
+batted_ball_processed$pitch_type[batted_ball_processed$pitch_type == 'SI'] <- 'FT'
+
+batted_ball_processed %<>%
+  mutate(pitch_type = case_when(
+    pitch_type %in% c("KN", "EP", "FO", NA, "SC", "UN") ~ "Other",
+    pitch_type == "FF" ~ "FF",
+    pitch_type == "SL" ~ "SL", 
+    pitch_type == "CH" ~ "CH", 
+    pitch_type == "FT" ~ "FT",
+    pitch_type == "CU" ~ "CU", 
+    pitch_type == "FC" ~ "FC"
+  ))
+```
+
+Here, I'm combining strikes and balls into one count variable. 
+```{r}
+batted_ball_processed %<>%
+  filter(balls != 4) %>% # for some reason there are two instances of a count with 4 balls
+  mutate(count = paste0(balls, "-", strikes)) %>%
+  dplyr::select(-c(balls, strikes))
+```
+
+Models tend to prefer numeric categories when possible, so I'm one-hot encoding pitcher handedness and batter stance. There will still be a column for each variable, but now a "1" will correspond to a RHP and a "0" to a LHP. Same thing for batter stance.
+```{r}
+batted_ball_processed %<>%
+  mutate(stand_r = ifelse(stand == "R", 1, 0)) %>%
+  mutate(p_throws_r = ifelse(p_throws == "R", 1, 0)) %>%
+  dplyr::select(-c(stand, p_throws))
+```
+
+Now, I'm moving on to more 'feature engineering.' I'm adding variables for: the spray angle, the batter pitcher matchup (LvL, RvR, LvR, and RvL), and shifting data combined with batter stance. Outside of where the ball is hit, it reasons that the most important factor of whether a ball will be a hit or not (and what type of hit) is where the fielders are positioned. Unfortunately, there is no publicly available data on the pitch-by-pitch level of where the fielders are positioned. Luckily, Baseball Savant provides some information on a pitch-by-pitch basis. That information come's from the if_fielding_alignment and of_fielding_alignment variables. For the infielders, there are three different types of shifts: standard, strategic, and infield shift. Infield shift is the shift that first comes to mind: three infielders are positioned on the same side of second base. Strategic shift is defined as a "catch-call for positioning that is neither 'standard,' nor 'three infielders to one side of second base." For the outfielders, there are are also three types of shifts: standard, strategic, and 4th outfielder. Like infielding shifting, strategic shifting for outfielders is when there are not four outfielders and the alignment is not standard. 4th outfielder is self explanatory. I'm adding whether the batter LHB or RBH because that dramatically changes the fielder's positioning.
+```{r}
+batted_ball_processed %<>%
+  mutate(spray_angle = round((atan((hc_x-125.42)/(198.27-hc_y))*180/pi*.75),1))
+
+batted_ball_processed %<>%
+  mutate(batter_pitcher_matchup = ifelse(p_throws_r == 1 & stand_r == 1, "r.vs.r", #pithcer.hand_batter.hand
+                                         ifelse(p_throws_r == 1 & stand_r == 0, "r.vs.l",
+                                                ifelse(p_throws_r == 0 & stand_r == 1, "l.vs.r", "l.vs.l"))))
+batted_ball_processed %<>%
+  mutate(batter_if_shift = case_when(
+    stand_r == 1 & if_fielding_alignment == "Standard" ~ "r_batter.no_shift",
+    stand_r == 1 & if_fielding_alignment == "Strategic" ~ "r_batter.strategic_shift",
+    stand_r == 1 & if_fielding_alignment == "Infield shift" ~ "r_batter.shift",
+    stand_r == 0 & if_fielding_alignment == "Standard" ~ "l_batter.no_shift",
+    stand_r == 0 & if_fielding_alignment == "Strategic" ~ "l_batter.strategic_shift",
+    stand_r == 0 & if_fielding_alignment == "Infield shift" ~ "l_batter.shift",
+  )) %>%
+  mutate(batter_of_shift = case_when(
+    stand_r == 1 & of_fielding_alignment == "Standard" ~ "r_batter.no_shift",
+    stand_r == 1 & of_fielding_alignment == "Strategic" ~ "r_batter.strategic_shift",
+    stand_r == 1 & of_fielding_alignment == "4th outfielder" ~ "r_batter.4th_outfielder",
+    stand_r == 0 & of_fielding_alignment == "Standard" ~ "l_batter.no_shift",
+    stand_r == 0 & of_fielding_alignment == "Strategic" ~ "l_batter.strategic_shift",
+    stand_r == 0 & of_fielding_alignment == "4th outfielder" ~ "l_batter.4th_outfielder",
+  )) %>%
+  dplyr::select(-c(if_fielding_alignment, of_fielding_alignment))
+```
+
+Lastly, I'm adding three new variables. The first is temperature. Baseball prospectus has shown how influential temperature is on the outcome of a batted ball. The best way I've been able to think about the affect of the temperature is comparing Wrigley field in April with the wind blowing in vs in August with the wind blowing out. In August, it feels like every ball hit in the air is going to leave the yard, while in April it's a surprise if any ball does. The temperature variable is only the temperature at the start of the game, so it's not perfect, but it does a pretty good job. Similarily to temperature, I'm adding a variable that reflects whether the game is inside a doom or not. While there aren't many indoor games, I think this may be a good proxy for controlling other weather variables, like wind. The last variable is the venue of the game combined with batter handedness. I originally saw this in Baseball Prospectus' DRC+ breakdown and thought if it was good enough for them, it's good enough for me. As Jonathan Judge says "[an indicator for stadium and batter handedness] accounts for the reality that stadiums tend to play differently for each batter side, and allows us to park-adjust by handedness for each event."
+```{r}
+game_info <- baseballr::get_game_info_sup_petti()
+
+batted_ball_processed %<>%
+  left_join(game_info %>% dplyr::select(c("game_pk", "venue_name", "temperature", "other_weather")),
+            by = c("game_pk")) %>%
+  mutate(is_dome = case_when(other_weather == "Roof Closed" | other_weather == "Dome" ~ 1,
+                                TRUE ~ 0)) %>%
+  mutate(trim_venue = gsub("\\s+", "", venue_name),
+         venue_batter.stand = ifelse(stand_r == 1, paste0(trim_venue, "_", "r"), paste0(trim_venue, "_", "l"))) %>%
+  dplyr::select(-c(other_weather, trim_venue, venue_name)) %>%
+  filter(venue_batter.stand != "BB&TBallpark_r", venue_batter.stand != "HiramBithornStadium_l", # no statcast info from these parks
+         venue_batter.stand != "EstadiodeBeisbolMonterrey_r", venue_batter.stand != "EstadiodeBeisbolMonterrey_l")
+
+# cleaning up stadium re-naming
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'U.S.CellularField_l'] <- 'GuaranteedRateField_l'
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'U.S.CellularField_r'] <- 'GuaranteedRateField_r'
+
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'O.coColiseum_l'] <- 'OaklandColiseum_l'
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'O.coColiseum_r'] <- 'OaklandColiseum_r'
+
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'AngelStadiumofAnaheim_l'] <- 'AngelStadium_l'
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'AngelStadiumofAnaheim_r'] <- 'AngelStadium_r'
+
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'OraclePark_l'] <- 'AT&TPark_l'
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'OraclePark_r'] <- 'AT&TPark_r'
+
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'T-MobilePark_l'] <- 'SafecoField_l'
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'T-MobilePark_r'] <- 'SafecoField_r'
+
+# for some reason 2016-06-12 Giants vs Dodgers had a null stadium, but it happened at AT&T Park (https://www.baseball-reference.com/boxes/SFN/SFN201606120.shtml)
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'NA_l'] <- 'AT&TPark_l'
+batted_ball_processed$venue_batter.stand[batted_ball_processed$venue_batter.stand == 'NA_r'] <- 'AT&TPark_r'
+```
+
+
+There are 16 unique batted balls events in this dataset. However, for the purposes of modeling, I'm going to condense that down into five categories: single, double, triple, home run, and out. This outcome variable is going to be my response variable. My model is going to try and predict the outcome of each batted ball and assign it to one of these five values. 
+```{r}
+batted_ball_processed %<>%
+  mutate(outcome = case_when(
+    events == "single" ~ "single",
+    events == "double" ~ "double", 
+    events == "triple" ~ "triple", 
+    events == "home_run" ~ "home_run", 
+    TRUE ~ "out"
+  )) %>%
+  dplyr::select(-c(events))
+```
+
+I'm going to be using XGBoost as model of choice, and XGBoost only handles numeric features. For that reason, I'm encoding my outcome variable as a number 0-4 representing the five original outcomes. (For some reason, I believe that XGBoost requires the response variable to be zero-indexed, so one of the classes has to be 0.)
+```{r}
+batted_ball_processed %<>%
+  mutate(outcome_ec = case_when(
+    outcome == "out" ~ 0,
+    outcome == "single" ~ 1,
+    outcome == "double" ~ 2,
+    outcome == "triple" ~ 3,
+    outcome == "home_run" ~ 4
+  )) %>%
+  dplyr::select(-c(outcome))
+```
+
+
+
+The last step is changing some of my variables into 'dummy variables.' Like I did above to batter and pitcher handedness, I'm going to create a new column for each non-numeric variable. Take the 'count' variable, for example. Because XGBoost only works with numeric variables, I can't input a column with characters '0-0' or '3-2', so now there will be one column that signifies if the count is '0-0' and another column for '0-1', and so on for all 12 count states. I'll be following that same procedure for: pitch type, zone, batter pitcher matchup, batter infield shift, batter outfield shift, and venue batter handedness. 
+```{r}
+batted_ball_processed %<>%
+  mutate(pitch_type = as.factor(pitch_type), 
+         zone = as.factor(zone), 
+         game_year = as.factor(game_year),
+         count = as.factor(count),
+         batter_pitcher_matchup = as.factor(batter_pitcher_matchup),
+         batter_if_shift = as.factor(batter_if_shift),
+         batter_of_shift = as.factor(batter_of_shift),
+         venue_batter.stand = as.factor(venue_batter.stand)) 
+
+batted_ball_processed <- fastDummies::dummy_cols(batted_ball_processed, select_columns = c("pitch_type", "zone", "count", 
+                                                                                   "batter_pitcher_matchup", "batter_if_shift", 
+                                                                                   "batter_of_shift", "venue_batter.stand"))
+head(batted_ball_processed)
+```
+
+```{r}
+write.csv(batted_ball_processed, "batted_ball_processed.csv")
+```

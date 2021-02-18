@@ -1,0 +1,268 @@
+---
+title: "Creating QC+ Part 1 - Data Acquisition and Cleaning"
+output: html_notebook
+---
+A couple of weeks ago, as part of a technical assessment for an application with a club, I was tasked with designing an algorithm to grade the quality of contact of batted balls. I came up with a metric called Quality of Metric Plus (QC+) (original, right?). I figured that it would be worth while to write up my process and apply a similar methodology to publicly available data and perhaps gain some insights on players. The dataset provided by the team had no information on who the batter or pitcher were or any other contextual variables, so this is not a direct replica of my previous work. However, I do think this will provide better results and can include some fun features such as defense shifting and spray angle. Mainly, I hope this can show one way of coming up with a metric and share what I learned along the way. 
+
+In this notebook, I will focus on data acquisition and cleaning. In subsequent posts, I will go through the rest of the data science process. Feature engineering and selection, model selection and validation, and then lastly metric creation, results, and further analysis.
+
+First, start by loading in libraries.
+```{r message=FALSE, warning=FALSE}
+library(baseballr)
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(ggthemes)
+library(patchwork)
+library(arm)
+library(blme)
+library(lme4)
+library(xgboost)
+library(ggrepel)
+```
+
+
+# Data Acquisition
+
+I already had downloaded a csv for each season prior to this project. All of the data is from Baseball Savant, and scraped using the baseballr package. If you're looking to download Baseball Savant data in R, Robert Frey has a good walk-through tutorial on YouTube of doing so (youtube.com/watch?v=swJr4u-HYr0). For the purpose of this project, I'm going to be using the 2015-2019 regular seasons. There will eventually be a model for each season.
+```{r}
+savant15 <- read_csv("savant15.csv") %>% dplyr::select(-c("X1"))
+savant16 <- read_csv("savant16.csv") %>% dplyr::select(-c("X1"))
+savant17 <- read_csv("savant17.csv") %>% dplyr::select(-c("X1"))
+savant18 <- read_csv("savant18.csv") %>% dplyr::select(-c("X1"))
+savant19 <- read_csv("savant19.csv")
+```
+
+# Data Cleaning
+
+Since I'm just focusing on quality of contact, I only need batted balls. 
+```{r}
+#ugly code b/c my R couldn't handle a dataframe the size of all five seasons
+batted_ball_15 <- savant15 %>%
+  filter(events == "field_out" | events == "single" | events == "double" | events == "triple" | events == "home_run" | events == "sac_fly" | 
+           events == "grounded_into_double_play" | events == "double_play" | events == "sac_fly_double_play" | events == "fielders_choice" | 
+           events == "fielders_choice_out" | events == "field_error" | events == "sac_bunt" | events == "triple_play" | events == "sac_bunt" | 
+           events == "force_out" | events == "sac_bunt_double_play")
+rm(savant15)
+
+batted_ball_16 <- savant16 %>%
+  filter(events == "field_out" | events == "single" | events == "double" | events == "triple" | events == "home_run" | events == "sac_fly" | 
+           events == "grounded_into_double_play" | events == "double_play" | events == "sac_fly_double_play" | events == "fielders_choice" | 
+           events == "fielders_choice_out" | events == "field_error" | events == "sac_bunt" | events == "triple_play" | events == "sac_bunt" | 
+           events == "force_out" | events == "sac_bunt_double_play")
+rm(savant16)
+
+batted_ball_17 <- savant17 %>%
+  filter(events == "field_out" | events == "single" | events == "double" | events == "triple" | events == "home_run" | events == "sac_fly" | 
+           events == "grounded_into_double_play" | events == "double_play" | events == "sac_fly_double_play" | events == "fielders_choice" | 
+           events == "fielders_choice_out" | events == "field_error" | events == "sac_bunt" | events == "triple_play" | events == "sac_bunt" | 
+           events == "force_out" | events == "sac_bunt_double_play")
+rm(savant17)
+
+batted_ball_18 <- savant18 %>%
+  filter(events == "field_out" | events == "single" | events == "double" | events == "triple" | events == "home_run" | events == "sac_fly" | 
+           events == "grounded_into_double_play" | events == "double_play" | events == "sac_fly_double_play" | events == "fielders_choice" | 
+           events == "fielders_choice_out" | events == "field_error" | events == "sac_bunt" | events == "triple_play" | events == "sac_bunt" | 
+           events == "force_out" | events == "sac_bunt_double_play")
+rm(savant18)
+
+batted_ball_19 <- savant19 %>%
+  filter(events == "field_out" | events == "single" | events == "double" | events == "triple" | events == "home_run" | events == "sac_fly" | 
+           events == "grounded_into_double_play" | events == "double_play" | events == "sac_fly_double_play" | events == "fielders_choice" | 
+           events == "fielders_choice_out" | events == "field_error" | events == "sac_bunt" | events == "triple_play" | events == "sac_bunt" | 
+           events == "force_out" | events == "sac_bunt_double_play")
+rm(savant19)
+
+batted_ball_data <- rbind(batted_ball_15, batted_ball_16, batted_ball_17, batted_ball_18, batted_ball_19)
+rm(batted_ball_15, batted_ball_16, batted_ball_17, batted_ball_18, batted_ball_19)
+```
+
+First, I'm going to remove all batted balls that have null values for exit velocity or launch angle.
+```{r}
+batted_ball_data %<>%
+  filter(!is.na(launch_speed) | !is.na(launch_angle))
+```
+
+
+**No Nulls**
+
+The majority of data cleaning has to deal with finding, and removing, 'no nulls' batted balls. Andrew Perpetua laid this out in an article in *The Hardball Times* (https://tht.fangraphs.com/43416-2/). Basically, TrackMan isn't perfect. It has a tendency to not being able to track certain batted balls (mostly ground balls and popups, more on this later). Over the course of it's five seasons as MLBAM's main tracking device, TrackMan got better, but still missed about 10% of batted balls. As Perpetua says, those missing batted balls have their exit velocity and launch angle decided by an algorithm, not a direct TrackMan measurement. The solution to those missing batted balls are imputing the exit velocity and launch angle based on the batted ball type and where the ball was fielded (recorded by a stringer). Perpetua calls these batted balls 'no nulls' and he recommends removing those from your dataset.
+
+
+To illustrate this process, here is the launch angle distribution of the original dataset (containing the 'no nulls').
+```{r message=FALSE, warning=FALSE}
+ggplot(batted_ball_data, aes(x = launch_angle)) + 
+  geom_density(color = "red") + geom_histogram(aes(y=..density..), color = "royalblue", alpha = .2, binwidth = 4) + 
+  xlab("Launch Angle") + ylab("") + 
+  ggtitle("Launch Angle Distribution") +
+  theme_bw() +
+  theme(axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank())
+```
+
+We can see that there are three local peaks that wouldn't be expected from a continous variable in a datset of this size. You may ask why does the distribution look like this. The answer is the 'no nulls' batted balls.
+
+
+Here is every unique combination of exit velocity and launch angle from 2015-2019. There are 306,301 unique combinations of exit velocity and launch angle, from a sample of 629,905 batted balls. 
+
+```{r message=FALSE, warning=FALSE}
+ev_la_combos <- batted_ball_data %>%
+  group_by(launch_speed, launch_angle) %>%
+  summarise(num = n()) %>%
+  arrange(desc(num))
+ev_la_combos
+
+ev_la_combos %>% filter(num < 6)
+```
+
+
+Out of those 306,301 combinations, 171,601 (56.02%) of the combinations only have one observation. So we can see that a majority of batted balls are at unique exit velocities and launch angles. From 2015-2019 there were 1,762 unique launch angles and 1,043 unique exit velocities. From a probabilitiy point of view, the likelihood of two batted balls having the exact same exit velocity and launch angle is pretty unlikely.
+
+Five is the magic number that Perpetua chose in his article. Five or more observations of exit velocity and launch angle combination he deemed to be 'no nulls.' I follow a similar process as 300,095 (97.97%) of the combinations have five or less observations. So, I'm going to remove all observations of launch angle and exit velocity that occur **more** than five times. 
+
+```{r message=FALSE, warning=FALSE}
+ev_la_bb.type_combos <- batted_ball_data %>%
+  group_by(launch_speed, launch_angle, bb_type) %>%
+  summarise(num = n()) %>%
+  arrange(desc(num))
+ev_la_bb.type_combos
+```
+
+*Popups*
+```{r}
+popup_combos_to_remove <- ev_la_bb.type_combos %>%
+  filter(bb_type == "popup") %>%
+  arrange(desc(num)) %>%
+  filter(num > 5)
+
+popup_combos_to_remove
+```
+Only six popup combinations occur more than five times. Going back to the launch angle distribution earlier, we can see that the driving force of that huge spike on the right side of the center is the 20,000 popups that were imputed to be hit at 80 mph and 69 degrees. 
+
+*Fly Balls*
+```{r}
+flyball_combos_to_remove <- ev_la_bb.type_combos %>%
+  filter(bb_type == "fly_ball") %>%
+  arrange(desc(num)) %>%
+  filter(num > 5)
+
+flyball_combos_to_remove
+```
+*Line Drives*
+```{r}
+linedrive_combos_to_remove <- ev_la_bb.type_combos %>%
+  filter(bb_type == "line_drive") %>%
+  arrange(desc(num)) %>%
+  filter(num > 5)
+
+linedrive_combos_to_remove
+```
+
+*Ground Balls*
+```{r}
+gb_combos_to_remove <- ev_la_bb.type_combos %>%
+  filter(bb_type == "ground_ball") %>%
+  arrange(desc(num))  %>%
+  filter(num > 5)
+
+gb_combos_to_remove
+```
+And here, we can see why there is a huge spike at around -25 degrees.
+
+```{r}
+to_be_removed <- rbind(popup_combos_to_remove, flyball_combos_to_remove, linedrive_combos_to_remove, gb_combos_to_remove)
+rm(popup_combos_to_remove, flyball_combos_to_remove, linedrive_combos_to_remove, gb_combos_to_remove)
+to_be_removed
+```
+
+A vast majority (~72%) of batted balls to be removed are either popups or ground balls. This confirms what Perpetua mentions in his article, "... not only does TrackMan have a bias against certain types of batted balls, but these batted balls are generally very weakly hit ground balls and pop-ups."
+
+In total, I'm going to remove 98,746 batted balls from the dataset. This represents about 15% of the original dataset. I have no problem with people who would argue that this removal criteria is too strict or is too unexact. However, when working with unperfect data (like we are), sometimes it's better to have an overarching philosphy rather than try to nit-pick about information that we don't have.
+
+
+```{r}
+# Removing 'no nulls'
+batted_ball_cleaned <- dplyr::anti_join(batted_ball_data, to_be_removed, by = c("launch_speed", "launch_angle", "bb_type"))
+```
+
+
+Now, let's look at the launch angle distribution after removing the 'no nulls' imputed batted balls.
+```{r message=FALSE, warning=FALSE}
+ggplot(batted_ball_cleaned, aes(x = launch_angle)) + 
+  geom_density(color = "red") + geom_histogram(aes(y=..density..), color = "royalblue", alpha = .2, binwidth = 4) + 
+  xlab("Launch Angle") + ylab("") + labs(subtitle = "After removing 'no nulls'") +
+  ggtitle("Launch Angle Distribution (2015-2019)") +
+  theme_bw() +
+  theme(axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank())
+```
+Much better! But not exactly the shape I was expecting. 
+
+```{r message=FALSE, warning=FALSE}
+before_cleaning <- ggplot(batted_ball_data, aes(x = launch_angle)) + 
+  geom_density(color = "red") + geom_histogram(aes(y=..density..), color = "royalblue", alpha = .2, binwidth = 4) + 
+  xlab("Launch Angle") + ylab("") + labs(subtitle = "Before removing 'no nulls'") +
+  ggtitle("Launch Angle Distribution (2015-2019)") +
+  theme_bw() +
+  theme(axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank())
+after_cleaning <- ggplot(batted_ball_cleaned, aes(x = launch_angle)) + 
+  geom_density(color = "red") + geom_histogram(aes(y=..density..), color = "royalblue", alpha = .2, binwidth = 4) + 
+  xlab("Launch Angle") + ylab("") + labs(subtitle = "After removing 'no nulls'") +
+  ggtitle("Launch Angle Distribution (2015-2019)") +
+  theme_bw() +
+  theme(axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank())
+
+la_comparison <- before_cleaning + after_cleaning
+rm(before_cleaning, after_cleaning)
+la_comparison
+```
+
+Here is another way of viewing the distribution changes. We can see that the three local peaks are removed and that the distribution is more centered.
+```{r, warning=FALSE}
+ggplot(data = batted_ball_data, aes(x=launch_angle)) + 
+  geom_density(color = "red") + 
+  geom_density(data = batted_ball_cleaned, color = "blue") + 
+  xlab("Launch Angle") + ylab("") + 
+  ggtitle("Distribution of Launch Angle") +
+  labs(subtitle = "Red: Original dataset\nBlue: Cleaned dataset") +
+  theme_bw() +
+  theme(axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank())
+```
+
+
+An astute reader might have noticed that a vast majority of the removed batted balls are poorly hit. Therefore, by removing these, generally, weaker hit balls then the creation of a quality of contact metric will favor the batters who had more weakly hit balls than those who didn't. By removing a player's worse hit balls they look a lot better. And that is true. However, the bias I've introduced is a necessary evil. We have to work with and accept it, it's better to work with accurate (i.e. meassured) data than not. It's important to keep that in mind when analyzing the results of the metric, but I believe this is the correct way of handling this analysis.
+
+Here's a quick little visualization showing the type of bias inflicted. Removing the 'no nulls' helps Alexi Amarista and J.J. Hardy a lot more than Aaron Judge and Franmil Reyes. 
+```{r message=FALSE, warning=FALSE}
+to_be_removed %<>%
+  mutate(is_no_null = 1)
+
+joined <- batted_ball_data %>%
+  left_join(to_be_removed,
+            by = c("launch_speed", "launch_angle", "bb_type")) %>%
+  mutate(is_no_null = case_when(is_no_null == 1 ~ 1,
+                                TRUE ~ 0))
+joined %>%
+  group_by(player_name) %>%
+  summarise(num_bbs = n(),
+            num_no_nulls = sum(is_no_null),
+            pct_no_nulls = 100*(num_no_nulls / num_bbs),
+            xwOBACON = mean(estimated_woba_using_speedangle,na.rm=T),
+            wOBACON = mean(woba_value / woba_denom, na.rm=T)) %>%
+  filter(num_bbs > 500) %>%
+  ggplot(aes(x = pct_no_nulls, y = wOBACON)) + geom_point() + geom_smooth() + 
+  labs(x = "Percentage of 'No Nulls' Hit", 
+       y = "xwOBACON", 
+       subtitle = "Batters with > 500 batted balls from 2015-2019", 
+       title = "Percentage of 'No Nulls' Hit vs. Expected Weighted On-Base Average on Contact") + 
+  theme_bw() + 
+  geom_text_repel(aes(label = player_name), segment.size = 0.2)
+```
+
+
+```{r}
+write.csv(batted_ball_cleaned, "batted_ball_cleaned_v2.csv")
+```

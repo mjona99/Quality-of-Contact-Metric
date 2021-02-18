@@ -1,0 +1,94 @@
+---
+title: "4 - Metric Creation and Validation"
+output: html_notebook
+---
+
+
+Descriptive Performance: the correlation between the metric and same-year team runs/PA;
+Reliability Performance: the correlation between the metric and itself in the following year; and
+Predictive Performance: the correlation between the metric and the following year’s runs/PA.
+
+Here we go
+```{r}
+batted_ball_results_2015
+batted_ball_results_2016
+batted_ball_results_2017 
+batted_ball_results_2018 
+batted_ball_results_2019 
+
+
+group.2015 <- batted_ball_results_2015 %>%
+  group_by(player_name) %>%
+  summarise(BBE_2015 = n(),
+            avg_qcp_2015 = mean(qcp),
+            woba_con_2015 = mean(woba_value / woba_denom, na.rm=T)) %>%
+  filter(BBE_2015 > 250)
+
+group.2016 <- batted_ball_results_2016 %>%
+  group_by(player_name) %>%
+  summarise(BBE_2016 = n(),
+            avg_qcp_2016 = mean(qcp),
+            woba_con_2016 = mean(woba_value / woba_denom, na.rm=T)) %>%
+  filter(BBE_2016 > 250)
+
+group.2017 <- batted_ball_results_2017 %>%
+  group_by(player_name) %>%
+  summarise(BBE_2017 = n(),
+            avg_qcp_2017 = mean(qcp),
+            woba_con_2017 = mean(woba_value / woba_denom, na.rm=T)) %>%
+  filter(BBE_2017 > 250)
+
+group.2018 <- batted_ball_results_2018 %>%
+  group_by(player_name) %>%
+  summarise(BBE_2018 = n(),
+            avg_qcp_2018 = mean(qcp),
+            woba_con_2018 = mean(woba_value / woba_denom, na.rm=T)) %>%
+  filter(BBE_2018 > 250)
+
+group.2019 <- batted_ball_results_2019 %>%
+  group_by(player_name) %>%
+  summarise(BBE_2019 = n(),
+            avg_qcp_2019 = mean(qcp),
+            woba_con_2019 = mean(woba_value / woba_denom, na.rm=T)) %>%
+  filter(BBE_2019 > 250)
+
+# 2015-2016
+joined_15_16 <- left_join(group.2015, group.2016, by = "player_name") %>%
+  filter(player_name %in% group.2015$player_name & player_name %in% group.2016$player_name)
+
+cor(joined_15_16$avg_qcp_2015, joined_15_16$avg_qcp_2016) # n > 250 = 0.7783435
+summary(lm(avg_qcp_2016 ~ avg_qcp_2015, data = joined_15_16)) # n > 250 =  0.6058
+#cor this season qcp with next wobacon
+cor(joined_15_16$avg_qcp_2015, joined_15_16$woba_con_2016) # n > 250 =  0.7238685
+summary(lm(woba_con_2016 ~ avg_qcp_2015, data = joined_15_16)) # n > 250, R^2 = 0.524
+
+# 2016-2017
+joined_16_17 <- left_join(group.2016, group.2017, by = "player_name") %>%
+  filter(player_name %in% group.2016$player_name & player_name %in% group.2017$player_name)
+
+cor(joined_16_17$avg_qcp_2016, joined_16_17$avg_qcp_2017) # n > 250 = 0.5735659
+summary(lm(avg_qcp_2017 ~ avg_qcp_2016, data = joined_16_17)) # n > 250 =  0.329
+#cor this season qcp with next wobacon
+cor(joined_16_17$avg_qcp_2016, joined_16_17$woba_con_2017) # n > 250 =  0.455185
+summary(lm(woba_con_2017 ~ avg_qcp_2016, data = joined_16_17)) # n > 250, R^2 = 0.2072
+
+# 2017-2018
+joined_17_18 <- left_join(group.2017, group.2018, by = "player_name") %>%
+  filter(player_name %in% group.2017$player_name & player_name %in% group.2018$player_name)
+
+cor(joined_17_18$avg_qcp_2017, joined_17_18$avg_qcp_2018) # n > 250 = 0.7253101
+summary(lm(avg_qcp_2018 ~ avg_qcp_2017, data = joined_17_18)) # n > 250 =  0.5261
+#cor this season qcp with next wobacon
+cor(joined_17_18$avg_qcp_2017, joined_17_18$woba_con_2018) # n > 250 =  0.6887269
+summary(lm(woba_con_2018 ~ avg_qcp_2017, data = joined_17_18)) # n > 250, R^2 = 0.4743
+
+# 2018-2019
+joined_18_19 <- left_join(group.2018, group.2019, by = "player_name") %>%
+  filter(player_name %in% group.2018$player_name & player_name %in% group.2019$player_name)
+
+cor(joined_18_19$avg_qcp_2018, joined_18_19$avg_qcp_2019) # n > 250 = 0.7026071
+summary(lm(avg_qcp_2019 ~ avg_qcp_2018, data = joined_18_19)) # n > 250 =  0.4937
+#cor this season qcp with next wobacon
+cor(joined_18_19$avg_qcp_2018, joined_18_19$woba_con_2019) # n > 250 =  0.6328501
+summary(lm(woba_con_2019 ~ avg_qcp_2018, data = joined_18_19)) # n > 250, R^2 = 0.4005
+```
