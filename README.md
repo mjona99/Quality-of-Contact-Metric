@@ -8,5 +8,5 @@ In the first notebook, I go through data acqusition and cleaning. In the second 
 
 To do:
 - [ ] clean up code
-- [ ] finalize visualizations
+- [ ] finalize notebooks
 - [ ] make into blog post
