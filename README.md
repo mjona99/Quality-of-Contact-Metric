@@ -8,7 +8,7 @@ In the first notebook, I go through data acqusition and cleaning. In the second 
 
 Links to published notebooks:
 
-[Part 1 - Data Acqusition and Cleaning] (https://rpubs.com/micahjona/qcp_p1)
+[Part 1 - Data Acqusition and Cleaning](https://rpubs.com/micahjona/qcp_p1)
 
 To do:
 - [ ] clean up code
