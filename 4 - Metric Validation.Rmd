@@ -8,15 +8,16 @@ Descriptive Performance: the correlation between the metric and same-year team r
 Reliability Performance: the correlation between the metric and itself in the following year; and
 Predictive Performance: the correlation between the metric and the following year’s runs/PA.
 
-Here we go
 ```{r}
 batted_ball_results_2015
 batted_ball_results_2016
 batted_ball_results_2017 
 batted_ball_results_2018 
 batted_ball_results_2019 
+```
 
-
+Reliability Performance
+```{r}
 group.2015 <- batted_ball_results_2015 %>%
   group_by(player_name) %>%
   summarise(BBE_2015 = n(),
@@ -92,3 +93,105 @@ summary(lm(avg_qcp_2019 ~ avg_qcp_2018, data = joined_18_19)) # n > 250 =  0.493
 cor(joined_18_19$avg_qcp_2018, joined_18_19$woba_con_2019) # n > 250 =  0.6328501
 summary(lm(woba_con_2019 ~ avg_qcp_2018, data = joined_18_19)) # n > 250, R^2 = 0.4005
 ```
+
+Putting in each team's runs and PA for the 2015-2019 seasons. Guess I could also do the 2020 season.
+Predictive Performance: the correlation between the metric and the following year’s runs/PA.
+
+```{r}
+teams_scoring_2 <- read_csv("teams_scoring_2.csv")
+
+qcp_2015 <- batted_ball_results_2015 %>%
+  group_by(batter_team) %>%
+  summarise(bbe_2015 = n(),
+            qcp_2015 = mean(qcp))
+
+qcp_2016 <- batted_ball_results_2016 %>%
+  group_by(batter_team) %>%
+  summarise(bbe_2016 = n(),
+            qcp_2016 = mean(qcp))
+
+qcp_2017 <- batted_ball_results_2017 %>%
+  group_by(batter_team) %>%
+  summarise(bbe_2017 = n(),
+            qcp_2017 = mean(qcp))
+
+qcp_2018 <- batted_ball_results_2018 %>%
+  group_by(batter_team) %>%
+  summarise(bbe_2018 = n(),
+            qcp_2018 = mean(qcp))
+
+qcp_2019 <- batted_ball_results_2019 %>%
+  group_by(batter_team) %>%
+  summarise(bbe_2019 = n(),
+            qcp_2019 = mean(qcp))
+
+qcp_all <- left_join(qcp_2015, qcp_2016, by = "batter_team") %>%
+  left_join(., qcp_2017, by = "batter_team") %>%
+  left_join(., qcp_2018, by = "batter_team") %>%
+  left_join(., qcp_2019, by = "batter_team")
+
+qcp_and_scoring <- left_join(x = qcp_all, y = teams_scoring_2, by = c("batter_team" = "Team"))
+
+qcp_and_scoring %<>%
+  mutate(total_pa = G * PA,
+         total_r = G * R,
+         runs_per_pa = total_r / total_pa)
+
+```
+
+Descriptive Performance: the correlation between the metric and same-year team runs/PA;
+```{r}
+### 2015
+qcp_and_scoring %>%
+  filter(Year == 2015) %$%
+  cor(runs_per_pa, qcp_2015) # 0.5933172
+
+### 2016
+qcp_and_scoring %>%
+  filter(Year == 2016) %$%
+  cor(runs_per_pa, qcp_2016) #0.6646133
+
+### 2017
+qcp_and_scoring %>%
+  filter(Year == 2017) %$%
+  cor(runs_per_pa, qcp_2017) #  0.659218
+
+### 2018
+qcp_and_scoring %>%
+  filter(Year == 2018) %$%
+  cor(runs_per_pa, qcp_2018) #  0.7716518
+
+### 2019
+qcp_and_scoring %>%
+  filter(Year == 2019) %$%
+  cor(runs_per_pa, qcp_2019) # 0.8270482
+```
+
+Predictive Performance: the correlation between the metric and the following year’s runs/PA.
+```{r}
+### 2015 qcp to 2016 runs/pa
+qcp_and_scoring %>%
+  filter(Year == 2016) %$%
+  cor(runs_per_pa, qcp_2015) # 0.6096966
+
+### 2016 qcp to 2017 runs/pa
+qcp_and_scoring %>%
+  filter(Year == 2017) %$%
+  cor(runs_per_pa, qcp_2016) #0.3272711
+
+### 2017 qcp to 2018 runs/pa
+qcp_and_scoring %>%
+  filter(Year == 2018) %$%
+  cor(runs_per_pa, qcp_2017) #  0.2390079
+
+### 2018 qcp to 2019 runs/pa
+qcp_and_scoring %>%
+  filter(Year == 2019) %$%
+  cor(runs_per_pa, qcp_2018) #  0.6513941
+
+### 2019 qcp to 2020 runs/pa
+qcp_and_scoring %>%
+  filter(Year == 2020) %$%
+  cor(runs_per_pa, qcp_2019) #  0.3568525
+```
+
