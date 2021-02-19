@@ -13,6 +13,4 @@ Links to published notebooks:
 [Part 2 - Feature Engineering and Selection](https://rpubs.com/micahjona/qcp_p2)
 
 To do:
-- [ ] clean up code
-- [ ] finalize notebooks
-- [ ] make into blog post
+- [ ] Make a less technical blog post
