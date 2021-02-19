@@ -12,5 +12,8 @@ Links to published notebooks:
 
 [Part 2 - Feature Engineering and Selection](https://rpubs.com/micahjona/qcp_p2)
 
+
+[Part 3 - Metric Validation](https://rpubs.com/micahjona/qcp_p4)
+
 To do:
 - [ ] Make a less technical blog post
