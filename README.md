@@ -12,6 +12,7 @@ Links to published notebooks:
 
 [Part 2 - Feature Engineering and Selection](https://rpubs.com/micahjona/qcp_p2)
 
+[Part 3 - Modeling](https://rpubs.com/micahjona/qcp_p3)
 
 [Part 4 - Metric Validation](https://rpubs.com/micahjona/qcp_p4)
 
