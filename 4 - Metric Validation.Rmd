@@ -21,7 +21,7 @@ For descriptiveness, I calculated the corelation with each team's average QC+ an
 * Average predictive peformance for QC+: 0.4368
 * Average descriptive peformance for QC+: 0.7032
 
-Overall, I'm pretty happy with the performance of this metric. While it doesn't compare to metrics such as DRC+ or Connor Kurcon's TrueHit, that wasn't the goal of this project. Making a metric from stratch was incredibly fun and a great learning experience. As I keep learning, I hope to make the metric stronger and already have some ideas on how to do that. If you made it this far, thanks for following along. 
+Overall, I'm pretty happy with the performance of this metric. While it doesn't compare to metrics such as DRC+ or Connor Kurcon's TrueHit, that wasn't the goal of this project. Making a metric from stratch was incredibly fun and a great learning experience. As I keep learning, I hope to make the metric stronger. If you made it this far, thanks for following along. 
 
 *I'd like to thank Andrew Perpetua, Harry Pavlidis, and Jonathan Judge for guidance at various stages of this project.*
 
