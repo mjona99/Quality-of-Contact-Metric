@@ -1,0 +1,1079 @@
+---
+title: "Creating QC+ Part 3 - Modeling"
+output: html_notebook
+---
+
+To create a quality of contact metric, I'm first creating a multi-class classification model that aims to predict the outcome of each batted ball using a XGBoost model. XGBoost is a decision tree based ensemble supervised machine learning algorithm that uses a gradient boosting framework. Gradient boosting is a case of boosting where errors are minimized by gradient descent and applies the principle of boosting weak learners. The rationale for using XGBoost lies in its easy to understand nature and the structure and size of the data. Decision trees for classifications are easy to interpret on a fundamental level. A basic decision tree, for example just a tree stump, visualized it is easy to see the rationale for the classification. Since this dataset is relatively large (over 100,000 observations per season) and is tabular data, gradient boosting machines (GBMs), specifically XGBoost seems like a fine choice for this problem. Also, GBMs are non-parametric models that are suitable for this non-linear data. 
+
+For my modeling, I'm going to use play outcome as the response variable. The play outcome (out, single, double, triple, homerun) is a good starting place for measuring quality of contact. If we are just looking at grading quality of contact based on the result of the batted ball then we know that a homerun is better than a triple which is better than a double and so on. This metric provides a broadly accepted way to rank the quality of a batted ball. Generally speaking, hitting a ball harder (more exit speed) is better than hitting a ball softer. However, it’s important to include the launch angle when using exit speed. A batter would much rather hit a ball 105 mph at 25 degrees than a ball 125 mph at -10 degrees. There are exceptions, but in the aggregate we know that homeruns have the best combination of exit speed and launch angle. There is more to assessing quality of contact than just exit speed and launch angle, such as spray angle, but it's also incredibly important to account for other contextual variables.
+
+I start the modeling by doing a simple 10-fold cross-validation to determine the appropriate number of iterations to use in a baseline XGBoost model. There are two main choices I made before starting the XGBoost modeling. The first is that I'm going to use multi:softprob as the objective of the model with mlogloss evaluation metric. multi:softprob returns the probability of each observation being a member of each class. There are five classes of the response variable (out, single, double, triple, and homerun). I made this choice because you can gain more information about each batted ball knowing the probability of it belonging to each class rather than the model returning which class has the maximum probability. Second, I used mlogloss as the evaluation metric in the XGBoost modeling. The evaluation metric is used for validation data in both the cross-validation and XGBoost modeling, in addition to being used for early stopping and model evaluation. mlogloss is the loss function used in multinomial logistic regression and is defined as the negative log-likelihood of a logistic model that returns probabilities for its training data. The models also have no hyperparameters specified, meaning that all of those parameters are their default values. Normally, I'd hyperparameter tune an XGBoost model using a latin hypercube, however I don't want to subject my laptop to running 150 different models, and in my experience tuning seems to increase accuracy by at most 1%. 
+
+Even though I'm going to run a model for each season on the entire season's worth of data, I'm still going to do a typical 70/30 train/test split first to ensure the model is not over- or under-fitting. 
+
+In addition, to the XGBoost model, I'm going use the class probabilties (probability of out, single, double, triple, and homerun) as inputs to a generalized linear mixed-effects model (GLMM). The multinomial modeling workflow comes from *Baseball Prospectus* and their creation of DRC+ (https://www.baseballprospectus.com/news/article/48293/entirely-beyond-wowy-a-breakdown-of-drc/#fnref4). Below I'm going to create four binomial subsets, therefore turning this multinomial problem into multiple binomial models. The four susbets are: out + single, out + double, out + triple, and out + homerun. Each subset has outs because that is our "pivot," the common category every other event will be regressed against. Outs were selected because, as Judge says, this methodology works best when the pivot is also the largest category. The most common outcome for a batted ball is an out (remember the typical league average batting average of balls in play (BABIP) is ~.300). Then each binomial subset is fit on a GLMM. My singular motivation of using this modeling (besides saying I'm using a GLMM) is to include batter and pitcher identity. It's clear that batter and pitchers have some effect on the outcome of a batted ball. For example, even without explicitly including sprint speed, in my experience this type of model is able to pick up on what batters are able to turn singles into double or doubles into triples. It's theoretically possible to include batter and pitchers in my XGBoost modeling as dummy variables, but I don't think my poor laptop would've been able to handle a 105,000 by 3,200 dataset five times for gradient boosting. 
+
+I will be using the logit of each class probability and the batter and pitcher as features in the GLMM model. Logit, also known as the log-odds, is the logarithm of the odds $\frac{p}{1 - p}$, where p is the probability (in our case, the probability of an out, single, double, triple, or homerun). For example, take the out probability, before being used in the model, it would now look like this: $\log\left(\frac{out.probability}{1 - (out.probability)}\right)$. 
+
+The final equation for the each GLMM model is: outcome ~ (1|pitcher) + (1|batter) + logit(out probability) + logit(single probability) + logit(double probability) + logit(triple probability) + logit(homerun probability). In addition to including batter and pitcher identity, which I believe will make the model a lot more robust, this model also acts as a sort of stacking algorithm.
+
+Stacking is a popular ensemble method in machine learning. Generally, stacking involves training several models with different algorithms that are relatively simple (base-learners). Then the predictions from each model are fed into one final model (meta-learner) to make the final prediction. So the inputs for the meta-learner are the prediction outputs of the base-learners. The benefit of stacking is that can combine the capabilities of a multitude of good models that end up making a stronger model than any of the base-learners. I wouldn't consider my methodology as exactly stacking because I'm not combining models, rather using the outputs from one model, in addition to other features, as the input to a final model. However, I do think that I will still enjoy some of the benefits of stacking. It's important to note, as it was pointed out to me, that sometimes XGBoost can smooth over the linear model signal for the random effects (pitcher and batter identity). Therefore, it's a possibility that the mixed-effects model doesn't entirely capture the random effect of each batter and pitcher accurrately. 
+
+Lastly, to create the QC+ metric I will take the new class probabilities from the GLMM model and multiply each probabiity with its associated linear weight. For example, say a batted ball has a probability of being an out of .45, a single .25, a double .15, a triple .10, and a homerun .05. Say this ball was from the 2015 season, on FanGraphs we can see that the linear weight of a single was 0.881, double 1.256, triple 1.594, and homerun 2.065. Then the expected weight for this batted ball would be: $.45 * 0 + .25 * .881 + .15 * 1.256 + .10 * 1.594 + .05 * 2.065 = 0.6713$. I'm going to do that for every batted ball in the season and then standardize them so that the average QC+ is 100, with a standard deviation of 30. The average of 100 puts QC+ on a similar scale as wRC+, DRC+, and other metrics. I picked a standard deviation of 30, because the standard deviation of wRC+ over the last couple of years was very close to 30. 
+
+
+Below I'm just going to show the process of the 2015 season model, but the 2016-2019 models are the exact same. 
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(baseballr)
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(ggthemes)
+library(patchwork)
+library(arm)
+library(blme)
+library(lme4)
+library(xgboost)
+library(ggrepel)
+library(fastDummies)
+library(caret)
+```
+
+
+```{r include=FALSE}
+batted_ball_model <- read_csv("batted_ball_processed.csv") %>% dplyr::select(-c("X1"))
+```
+
+
+```{r}
+# setting seed for reproducibility
+set.seed(123) 
+```
+
+Creating a dataset for each season.
+```{r}
+batted_ball_model_2015 <- batted_ball_model %>% filter(game_year == 2015)
+batted_ball_model_2016 <- batted_ball_model %>% filter(game_year == 2016)
+batted_ball_model_2017 <- batted_ball_model %>% filter(game_year == 2017)
+batted_ball_model_2018 <- batted_ball_model %>% filter(game_year == 2018)
+batted_ball_model_2019 <- batted_ball_model %>% filter(game_year == 2019)
+```
+
+Here is the XGBoost modeling for each season, split into train/test sets to determine overall generalization ability. For the sake of being (somewhat) breif, I'm only going to show the 2015 model throughout the entire notebook, as the 2016-2019 models are the same.
+```{r}
+####### 2015
+# create indecies for splitting (need to use a specific column from df for it to run)
+train_index_2015 <- createDataPartition(y = batted_ball_model_2015$outcome_ec, p = .70, list = FALSE) %>% as.vector()
+
+# split into train and test
+train_2015 <- batted_ball_model_2015[train_index_2015,]
+test_2015 <- batted_ball_model_2015[-train_index_2015,]
+
+# need a vector of response variable (outcome)
+vec_label_train_2015 <- train_2015$outcome_ec
+
+train_data_2015 <- as.matrix(train_2015 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+vec_label_test_2015 <- test_2015$outcome_ec
+test_data_2015 <- as.matrix(test_2015 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+# convert the train and test into xgb.DMatrix
+x_train_2015 = xgboost::xgb.DMatrix(data = train_data_2015, label = vec_label_train_2015)
+x_test_2015 = xgboost::xgb.DMatrix(data = test_data_2015, label = vec_label_test_2015)
+
+baseline_cv_2015 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2015, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+
+base_mod_2015 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2015, nrounds = baseline_cv_2015$best_ntreelimit)
+```
+
+```{r include=FALSE}
+####### 2016
+
+# create indecies for splitting (need to use a specific column from df for it to run)
+train_index_2016 <- createDataPartition(y = batted_ball_model_2016$outcome_ec, p = .70, list = FALSE) %>% as.vector()
+
+# split into train and test
+train_2016 <- batted_ball_model_2016[train_index_2016,]
+test_2016 <- batted_ball_model_2016[-train_index_2016,]
+
+# need a vector of response variable (outcome)
+vec_label_train_2016 <- train_2016$outcome_ec
+
+train_data_2016 <- as.matrix(train_2016 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+vec_label_test_2016 <- test_2016$outcome_ec
+test_data_2016 <- as.matrix(test_2016 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+# convert the train and test into xgb.DMatrix
+x_train_2016 = xgboost::xgb.DMatrix(data = train_data_2016, label = vec_label_train_2016)
+x_test_2016 = xgboost::xgb.DMatrix(data = test_data_2016, label = vec_label_test_2016)
+
+baseline_cv_2016 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2016, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+
+base_mod_2016 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2016, nrounds = baseline_cv_2016$best_ntreelimit)
+
+####### 2017
+
+# create indecies for splitting (need to use a specific column from df for it to run)
+train_index_2017 <- createDataPartition(y = batted_ball_model_2017$outcome_ec, p = .70, list = FALSE) %>% as.vector()
+
+# split into train and test
+train_2017 <- batted_ball_model_2017[train_index_2017,]
+test_2017 <- batted_ball_model_2017[-train_index_2017,]
+
+# need a vector of response variable (outcome)
+vec_label_train_2017 <- train_2017$outcome_ec
+
+train_data_2017 <- as.matrix(train_2017 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+vec_label_test_2017 <- test_2017$outcome_ec
+test_data_2017 <- as.matrix(test_2017 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+# convert the train and test into xgb.DMatrix
+x_train_2017 = xgboost::xgb.DMatrix(data = train_data_2017, label = vec_label_train_2017)
+x_test_2017 = xgboost::xgb.DMatrix(data = test_data_2017, label = vec_label_test_2017)
+
+baseline_cv_2017 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2017, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+
+base_mod_2017 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2017, nrounds = baseline_cv_2017$best_ntreelimit)
+
+####### 2018
+
+# create indecies for splitting (need to use a specific column from df for it to run)
+train_index_2018 <- createDataPartition(y = batted_ball_model_2018$outcome_ec, p = .70, list = FALSE) %>% as.vector()
+
+# split into train and test
+train_2018 <- batted_ball_model_2018[train_index_2018,]
+test_2018 <- batted_ball_model_2018[-train_index_2018,]
+
+# need a vector of response variable (outcome)
+vec_label_train_2018 <- train_2018$outcome_ec
+
+train_data_2018 <- as.matrix(train_2018 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+vec_label_test_2018 <- test_2018$outcome_ec
+test_data_2018 <- as.matrix(test_2018 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+# convert the train and test into xgb.DMatrix
+x_train_2018 = xgboost::xgb.DMatrix(data = train_data_2018, label = vec_label_train_2018)
+x_test_2018 = xgboost::xgb.DMatrix(data = test_data_2018, label = vec_label_test_2018)
+
+baseline_cv_2018 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2018, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+
+base_mod_2018 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2018, nrounds = baseline_cv_2018$best_ntreelimit)
+
+####### 2019
+
+# create indecies for splitting (need to use a specific column from df for it to run)
+train_index_2019 <- createDataPartition(y = batted_ball_model_2019$outcome_ec, p = .70, list = FALSE) %>% as.vector()
+
+# split into train and test
+train_2019 <- batted_ball_model_2019[train_index_2019,]
+test_2019 <- batted_ball_model_2019[-train_index_2019,]
+
+# need a vector of response variable (outcome)
+vec_label_train_2019 <- train_2019$outcome_ec
+
+train_data_2019 <- as.matrix(train_2019 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+vec_label_test_2019 <- test_2019$outcome_ec
+test_data_2019 <- as.matrix(test_2019 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+
+# convert the train and test into xgb.DMatrix
+x_train_2019 = xgboost::xgb.DMatrix(data = train_data_2019, label = vec_label_train_2019)
+x_test_2019 = xgboost::xgb.DMatrix(data = test_data_2019, label = vec_label_test_2019)
+
+baseline_cv_2019 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2019, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+
+base_mod_2019 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = x_train_2019, nrounds = baseline_cv_2019$best_ntreelimit)
+```
+
+Here I'm computing the test set accuracy for each season's model. The accuracies range from 80.8% to 81.6%, which is very good. Keep in mind that a naive classifier would have an accuracy around 20% (randomly guessing the class for each observation). 
+```{r}
+xgb.pred_2015 = predict(base_mod_2015, x_test_2015, reshape=T)
+xgb.pred_2015 = as.data.frame(xgb.pred_2015)
+colnames(xgb.pred_2015) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_base_2015 <- test_2015
+preds_base_2015$out.prob <- xgb.pred_2015[,1]
+preds_base_2015$single.prob <- xgb.pred_2015[,2]
+preds_base_2015$double.prob <- xgb.pred_2015[,3]
+preds_base_2015$triple.prob <- xgb.pred_2015[,4]
+preds_base_2015$hr.prob <- xgb.pred_2015[,5]
+
+max_prob_2015 <- colnames(xgb.pred_2015)[apply(xgb.pred_2015,1,which.max)]
+
+preds_base_2015$max.prob <- max_prob_2015
+
+preds_base_2015$pred.right <- ifelse(preds_base_2015$max.prob == "Out" & preds_base_2015$outcome_ec == 0, "yes", 
+                                ifelse(preds_base_2015$max.prob == "Single" & preds_base_2015$outcome_ec == 1, "yes",
+                                       ifelse(preds_base_2015$max.prob == "Double" & preds_base_2015$outcome_ec == 2, "yes",
+                                              ifelse(preds_base_2015$max.prob == "Triple" & preds_base_2015$outcome_ec == 3, "yes",
+                                                     ifelse(preds_base_2015$max.prob == "Home_Run" & preds_base_2015$outcome_ec == 4, "yes", "no")))))
+preds_base_2015$pred.right <- as.factor(preds_base_2015$pred.right)
+
+sum(preds_base_2015$pred.right == "yes") / nrow(preds_base_2015) #0.8083159
+```
+
+```{r include=FALSE}
+###### 2016
+xgb.pred_2016 = predict(base_mod_2016, x_test_2016, reshape=T)
+xgb.pred_2016 = as.data.frame(xgb.pred_2016)
+colnames(xgb.pred_2016) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_base_2016 <- test_2016
+preds_base_2016$out.prob <- xgb.pred_2016[,1]
+preds_base_2016$single.prob <- xgb.pred_2016[,2]
+preds_base_2016$double.prob <- xgb.pred_2016[,3]
+preds_base_2016$triple.prob <- xgb.pred_2016[,4]
+preds_base_2016$hr.prob <- xgb.pred_2016[,5]
+
+max_prob_2016 <- colnames(xgb.pred_2016)[apply(xgb.pred_2016,1,which.max)]
+
+preds_base_2016$max.prob <- max_prob_2016
+
+preds_base_2016$pred.right <- ifelse(preds_base_2016$max.prob == "Out" & preds_base_2016$outcome_ec == 0, "yes", 
+                                ifelse(preds_base_2016$max.prob == "Single" & preds_base_2016$outcome_ec == 1, "yes",
+                                       ifelse(preds_base_2016$max.prob == "Double" & preds_base_2016$outcome_ec == 2, "yes",
+                                              ifelse(preds_base_2016$max.prob == "Triple" & preds_base_2016$outcome_ec == 3, "yes",
+                                                     ifelse(preds_base_2016$max.prob == "Home_Run" & preds_base_2016$outcome_ec == 4, "yes", "no")))))
+preds_base_2016$pred.right <- as.factor(preds_base_2016$pred.right)
+
+sum(preds_base_2016$pred.right == "yes") / nrow(preds_base_2016) #0.8102002
+
+
+###### 2017
+xgb.pred_2017 = predict(base_mod_2017, x_test_2017, reshape=T)
+xgb.pred_2017 = as.data.frame(xgb.pred_2017)
+colnames(xgb.pred_2017) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_base_2017 <- test_2017
+preds_base_2017$out.prob <- xgb.pred_2017[,1]
+preds_base_2017$single.prob <- xgb.pred_2017[,2]
+preds_base_2017$double.prob <- xgb.pred_2017[,3]
+preds_base_2017$triple.prob <- xgb.pred_2017[,4]
+preds_base_2017$hr.prob <- xgb.pred_2017[,5]
+
+max_prob_2017 <- colnames(xgb.pred_2017)[apply(xgb.pred_2017,1,which.max)]
+
+preds_base_2017$max.prob <- max_prob_2017
+
+preds_base_2017$pred.right <- ifelse(preds_base_2017$max.prob == "Out" & preds_base_2017$outcome_ec == 0, "yes", 
+                                ifelse(preds_base_2017$max.prob == "Single" & preds_base_2017$outcome_ec == 1, "yes",
+                                       ifelse(preds_base_2017$max.prob == "Double" & preds_base_2017$outcome_ec == 2, "yes",
+                                              ifelse(preds_base_2017$max.prob == "Triple" & preds_base_2017$outcome_ec == 3, "yes",
+                                                     ifelse(preds_base_2017$max.prob == "Home_Run" & preds_base_2017$outcome_ec == 4, "yes", "no")))))
+preds_base_2017$pred.right <- as.factor(preds_base_2017$pred.right)
+
+sum(preds_base_2017$pred.right == "yes") / nrow(preds_base_2017) #0.8154189
+
+
+###### 2018
+xgb.pred_2018 = predict(base_mod_2018, x_test_2018, reshape=T)
+xgb.pred_2018 = as.data.frame(xgb.pred_2018)
+colnames(xgb.pred_2018) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_base_2018 <- test_2018
+preds_base_2018$out.prob <- xgb.pred_2018[,1]
+preds_base_2018$single.prob <- xgb.pred_2018[,2]
+preds_base_2018$double.prob <- xgb.pred_2018[,3]
+preds_base_2018$triple.prob <- xgb.pred_2018[,4]
+preds_base_2018$hr.prob <- xgb.pred_2018[,5]
+
+max_prob_2018 <- colnames(xgb.pred_2018)[apply(xgb.pred_2018,1,which.max)]
+
+preds_base_2018$max.prob <- max_prob_2018
+
+preds_base_2018$pred.right <- ifelse(preds_base_2018$max.prob == "Out" & preds_base_2018$outcome_ec == 0, "yes", 
+                                ifelse(preds_base_2018$max.prob == "Single" & preds_base_2018$outcome_ec == 1, "yes",
+                                       ifelse(preds_base_2018$max.prob == "Double" & preds_base_2018$outcome_ec == 2, "yes",
+                                              ifelse(preds_base_2018$max.prob == "Triple" & preds_base_2018$outcome_ec == 3, "yes",
+                                                     ifelse(preds_base_2018$max.prob == "Home_Run" & preds_base_2018$outcome_ec == 4, "yes", "no")))))
+preds_base_2018$pred.right <- as.factor(preds_base_2018$pred.right)
+
+sum(preds_base_2018$pred.right == "yes") / nrow(preds_base_2018) #0.8160729
+
+###### 2019
+xgb.pred_2019 = predict(base_mod_2019, x_test_2019, reshape=T)
+xgb.pred_2019 = as.data.frame(xgb.pred_2019)
+colnames(xgb.pred_2019) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_base_2019 <- test_2019
+preds_base_2019$out.prob <- xgb.pred_2019[,1]
+preds_base_2019$single.prob <- xgb.pred_2019[,2]
+preds_base_2019$double.prob <- xgb.pred_2019[,3]
+preds_base_2019$triple.prob <- xgb.pred_2019[,4]
+preds_base_2019$hr.prob <- xgb.pred_2019[,5]
+
+max_prob_2019 <- colnames(xgb.pred_2019)[apply(xgb.pred_2019,1,which.max)]
+
+preds_base_2019$max.prob <- max_prob_2019
+
+preds_base_2019$pred.right <- ifelse(preds_base_2019$max.prob == "Out" & preds_base_2019$outcome_ec == 0, "yes", 
+                                ifelse(preds_base_2019$max.prob == "Single" & preds_base_2019$outcome_ec == 1, "yes",
+                                       ifelse(preds_base_2019$max.prob == "Double" & preds_base_2019$outcome_ec == 2, "yes",
+                                              ifelse(preds_base_2019$max.prob == "Triple" & preds_base_2019$outcome_ec == 3, "yes",
+                                                     ifelse(preds_base_2019$max.prob == "Home_Run" & preds_base_2019$outcome_ec == 4, "yes", "no")))))
+preds_base_2019$pred.right <- as.factor(preds_base_2019$pred.right)
+
+sum(preds_base_2019$pred.right == "yes") / nrow(preds_base_2019) #0.8084982
+```
+
+
+Now, I'm going to train each model on the entire season's data.
+```{r}
+### 2015
+vec_label_2015 <- batted_ball_model_2015$outcome_ec
+all_dataset_2015 <- as.matrix(batted_ball_model_2015 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+full_dataset_x_2015 = xgb.DMatrix(data = all_dataset_2015, label = vec_label_2015)
+
+full_cv_2015 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2015, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+full_mod_2015 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2015, nrounds = full_cv_2015$best_ntreelimit)
+```
+
+```{r include=FALSE}
+### 2016
+vec_label_2016 <- batted_ball_model_2016$outcome_ec
+all_dataset_2016 <- as.matrix(batted_ball_model_2016 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+full_dataset_x_2016 = xgb.DMatrix(data = all_dataset_2016, label = vec_label_2016)
+
+full_cv_2016 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2016, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+full_mod_2016 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2016, nrounds = full_cv_2016$best_ntreelimit)
+
+### 2017
+vec_label_2017 <- batted_ball_model_2017$outcome_ec
+all_dataset_2017 <- as.matrix(batted_ball_model_2017 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+full_dataset_x_2017 = xgb.DMatrix(data = all_dataset_2017, label = vec_label_2017)
+
+full_cv_2017 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2017, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+full_mod_2017 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2017, nrounds = full_cv_2017$best_ntreelimit)
+
+### 2018
+vec_label_2018 <- batted_ball_model_2018$outcome_ec
+all_dataset_2018 <- as.matrix(batted_ball_model_2018 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+full_dataset_x_2018 = xgb.DMatrix(data = all_dataset_2018, label = vec_label_2018)
+
+full_cv_2018 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2018, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+full_mod_2018 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2018, nrounds = full_cv_2018$best_ntreelimit)
+
+### 2019
+vec_label_2019 <- batted_ball_model_2019$outcome_ec
+all_dataset_2019 <- as.matrix(batted_ball_model_2019 %>% dplyr::select(c("launch_angle", "launch_speed", "spray_angle", "stand_r", "p_throws_r", "temperature", "is_dome",
+                                                            pitch_type_CH:venue_batter.stand_YankeeStadium_r)))
+full_dataset_x_2019 = xgb.DMatrix(data = all_dataset_2019, label = vec_label_2019)
+
+full_cv_2019 <- xgboost::xgb.cv(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2019, nrounds = 2500, early_stopping_rounds = 10, nfold=10, stratified = T)
+full_mod_2019 <- xgboost::xgboost(params = list(objective = "multi:softprob", eval_metric = c("mlogloss"), num_class = 5), data = full_dataset_x_2019, nrounds = full_cv_2019$best_ntreelimit)
+```
+
+```{r eval=FALSE, include=FALSE}
+importance_full_mod_2019 <- xgb.importance(feature_names = colnames(full_mod_2019), model = full_mod_2019)
+
+importance_plot_full_mod_2019 <- xgb.ggplot.importance(importance_matrix = importance_full_mod_2019)
+
+grp_imp_base <- importance_full_mod_2019 %>%
+  mutate(zone = case_when(grepl("zone", Feature) ~ "zone",
+                          TRUE ~ "No")) %>%
+  mutate(pitch_type = case_when(grepl("pitch_type", Feature) ~ "pitch_type",
+                          TRUE ~ "No")) %>%
+  mutate(batter_if_shift = case_when(grepl("batter_if_shift", Feature) ~ "batter_if_shift",
+                          TRUE ~ "No")) %>%
+  mutate(batter_of_shift = case_when(grepl("batter_of_shift", Feature) ~ "batter_of_shift",
+                          TRUE ~ "No")) %>%
+  mutate(game_year = case_when(grepl("game_year", Feature) ~ "game_year",
+                          TRUE ~ "No")) %>%
+  mutate(count = case_when(grepl("count", Feature) ~ "count",
+                          TRUE ~ "No")) %>%
+  mutate(venue_batter.stand = case_when(grepl("venue_batter.stand", Feature) ~ "venue_batter.stand",
+                          TRUE ~ "No")) %>%
+  mutate(batter_pitcher_matchup = case_when(grepl("batter_pitcher_matchup", Feature) ~ "batter_pitcher_matchup",
+                          TRUE ~ "No"))
+
+zone_imp <- grp_imp_base %>%
+  group_by(zone) %>%
+  filter(zone == "zone") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = zone)
+
+pitch_type_imp <- grp_imp_base %>%
+  group_by(pitch_type) %>%
+  filter(pitch_type == "pitch_type") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = pitch_type)
+
+batter_if_shift_imp <- grp_imp_base %>%
+  group_by(batter_if_shift) %>%
+  filter(batter_if_shift == "batter_if_shift") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = batter_if_shift)
+
+batter_of_shift_imp <- grp_imp_base %>%
+  group_by(batter_of_shift) %>%
+  filter(batter_of_shift == "batter_of_shift") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = batter_of_shift)
+
+game_year_imp <- grp_imp_base %>%
+  group_by(game_year) %>%
+  filter(game_year == "game_year") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = game_year)
+
+count_imp <- grp_imp_base %>%
+  group_by(count) %>%
+  filter(count == "count") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = count)
+
+venue_batter.stand_imp <- grp_imp_base %>%
+  group_by(venue_batter.stand) %>%
+  filter(venue_batter.stand == "venue_batter.stand") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = venue_batter.stand)
+
+batter_pitcher_matchup_imp <- grp_imp_base %>%
+  group_by(batter_pitcher_matchup) %>%
+  filter(batter_pitcher_matchup == "batter_pitcher_matchup") %>%
+  summarise(new_gain = sum(Gain), 
+            new_cover = sum(Cover),
+            new_frequency = sum(Frequency),
+            new_importance = sum(Importance)) %>%
+  rename(Feature = batter_pitcher_matchup)
+
+new_imp <- rbind(zone_imp, pitch_type_imp, batter_if_shift_imp, batter_of_shift_imp, game_year_imp, count_imp, venue_batter.stand_imp, 
+                 batter_pitcher_matchup_imp)
+
+new_imp <- rename(new_imp, Gain = new_gain, Cover = new_cover, Frequency = new_frequency, Importance = new_importance)
+
+non_dummies <- importance_base_mod_2019 %>%
+  filter(Feature == "launch_angle" | Feature == "launch_speed" | Feature == "spray_angle" | Feature == "stand_r" | Feature == "temperature" | 
+           Feature == "p_throws_r" | Feature == "is_dome")
+
+all_grp_importance <- rbind(non_dummies, new_imp)
+
+grp_importance_plot_full_mod_2019 <- xgb.ggplot.importance(importance_matrix = all_grp_importance)
+```
+
+Here are the feature importance plots for each model. The results are what to be expected: launch anle, exit speed, and spray angle are the three most important variables that go into classifying the outcome of a batted ball. What surprised me was how influential the infield shift feature was. Feature engineering is incredibly benefical to modeling. 
+```{r}
+final_2015 <- grp_importance_plot_full_mod_2015 + ggtitle("Feature Importance - 2015 Model")
+
+final_2016 <- grp_importance_plot_full_mod_2016 + ggtitle("Feature Importance - 2016 Model")
+
+final_2017 <- grp_importance_plot_full_mod_2017 + ggtitle("Feature Importance - 2017 Model")
+
+final_2018 <- grp_importance_plot_full_mod_2018 + ggtitle("Feature Importance - 2018 Model")
+
+final_2019 <- grp_importance_plot_full_mod_2019 + ggtitle("Feature Importance - 2019 Model")
+
+#(final_2015 + final_2016 + final_2017) / (final_2018 + final_2019)
+
+final_2015 
+final_2016
+final_2017
+final_2018
+final_2019
+```
+
+Now, I'm going to compute the accuracy of the models that were trained on the entire dataset. They turned out great; ranging from 85.25% to 86.25%. 
+```{r}
+###### 2015
+xgb.full_pred_2015 = predict(full_mod_2015, full_dataset_x_2015, reshape=T)
+xgb.full_pred_2015 = as.data.frame(xgb.full_pred_2015)
+colnames(xgb.full_pred_2015) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_full_2015 <- batted_ball_model_2015
+preds_full_2015$out.prob <- xgb.full_pred_2015[,1]
+preds_full_2015$single.prob <- xgb.full_pred_2015[,2]
+preds_full_2015$double.prob <- xgb.full_pred_2015[,3]
+preds_full_2015$triple.prob <- xgb.full_pred_2015[,4]
+preds_full_2015$hr.prob <- xgb.full_pred_2015[,5]
+
+max_prob_full_2015 <- colnames(xgb.full_pred_2015)[apply(xgb.full_pred_2015,1,which.max)]
+
+preds_full_2015$max.prob <- max_prob_full_2015
+
+preds_full_2015$pred.right <- ifelse(preds_full_2015$max.prob == "Out" & preds_full_2015$outcome_ec == 0, "yes", 
+                                ifelse(preds_full_2015$max.prob == "Single" & preds_full_2015$outcome_ec == 1, "yes",
+                                       ifelse(preds_full_2015$max.prob == "Double" & preds_full_2015$outcome_ec == 2, "yes",
+                                              ifelse(preds_full_2015$max.prob == "Triple" & preds_full_2015$outcome_ec == 3, "yes",
+                                                     ifelse(preds_full_2015$max.prob == "Home_Run" & preds_full_2015$outcome_ec == 4, "yes", "no")))))
+preds_full_2015$pred.right <- as.factor(preds_full_2015$pred.right)
+
+sum(preds_full_2015$pred.right == "yes") / nrow(preds_full_2015) #0.8544968
+```
+
+```{r include=FALSE}
+###### 2016
+xgb.full_pred_2016 = predict(full_mod_2016, full_dataset_x_2016, reshape=T)
+xgb.full_pred_2016 = as.data.frame(xgb.full_pred_2016)
+colnames(xgb.full_pred_2016) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_full_2016 <- batted_ball_model_2016
+preds_full_2016$out.prob <- xgb.full_pred_2016[,1]
+preds_full_2016$single.prob <- xgb.full_pred_2016[,2]
+preds_full_2016$double.prob <- xgb.full_pred_2016[,3]
+preds_full_2016$triple.prob <- xgb.full_pred_2016[,4]
+preds_full_2016$hr.prob <- xgb.full_pred_2016[,5]
+
+max_prob_full_2016 <- colnames(xgb.full_pred_2016)[apply(xgb.full_pred_2016,1,which.max)]
+
+preds_full_2016$max.prob <- max_prob_full_2016
+
+preds_full_2016$pred.right <- ifelse(preds_full_2016$max.prob == "Out" & preds_full_2016$outcome_ec == 0, "yes", 
+                                ifelse(preds_full_2016$max.prob == "Single" & preds_full_2016$outcome_ec == 1, "yes",
+                                       ifelse(preds_full_2016$max.prob == "Double" & preds_full_2016$outcome_ec == 2, "yes",
+                                              ifelse(preds_full_2016$max.prob == "Triple" & preds_full_2016$outcome_ec == 3, "yes",
+                                                     ifelse(preds_full_2016$max.prob == "Home_Run" & preds_full_2016$outcome_ec == 4, "yes", "no")))))
+preds_full_2016$pred.right <- as.factor(preds_full_2016$pred.right)
+
+sum(preds_full_2016$pred.right == "yes") / nrow(preds_full_2016) #0.852469
+
+###### 2017
+xgb.full_pred_2017 = predict(full_mod_2017, full_dataset_x_2017, reshape=T)
+xgb.full_pred_2017 = as.data.frame(xgb.full_pred_2017)
+colnames(xgb.full_pred_2017) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_full_2017 <- batted_ball_model_2017
+preds_full_2017$out.prob <- xgb.full_pred_2017[,1]
+preds_full_2017$single.prob <- xgb.full_pred_2017[,2]
+preds_full_2017$double.prob <- xgb.full_pred_2017[,3]
+preds_full_2017$triple.prob <- xgb.full_pred_2017[,4]
+preds_full_2017$hr.prob <- xgb.full_pred_2017[,5]
+
+max_prob_full_2017 <- colnames(xgb.full_pred_2017)[apply(xgb.full_pred_2017,1,which.max)]
+
+preds_full_2017$max.prob <- max_prob_full_2017
+
+preds_full_2017$pred.right <- ifelse(preds_full_2017$max.prob == "Out" & preds_full_2017$outcome_ec == 0, "yes", 
+                                ifelse(preds_full_2017$max.prob == "Single" & preds_full_2017$outcome_ec == 1, "yes",
+                                       ifelse(preds_full_2017$max.prob == "Double" & preds_full_2017$outcome_ec == 2, "yes",
+                                              ifelse(preds_full_2017$max.prob == "Triple" & preds_full_2017$outcome_ec == 3, "yes",
+                                                     ifelse(preds_full_2017$max.prob == "Home_Run" & preds_full_2017$outcome_ec == 4, "yes", "no")))))
+preds_full_2017$pred.right <- as.factor(preds_full_2017$pred.right)
+
+sum(preds_full_2017$pred.right == "yes") / nrow(preds_full_2017) #0.8606125
+
+###### 2018
+xgb.full_pred_2018 = predict(full_mod_2018, full_dataset_x_2018, reshape=T)
+xgb.full_pred_2018 = as.data.frame(xgb.full_pred_2018)
+colnames(xgb.full_pred_2018) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_full_2018 <- batted_ball_model_2018
+preds_full_2018$out.prob <- xgb.full_pred_2018[,1]
+preds_full_2018$single.prob <- xgb.full_pred_2018[,2]
+preds_full_2018$double.prob <- xgb.full_pred_2018[,3]
+preds_full_2018$triple.prob <- xgb.full_pred_2018[,4]
+preds_full_2018$hr.prob <- xgb.full_pred_2018[,5]
+
+max_prob_full_2018 <- colnames(xgb.full_pred_2018)[apply(xgb.full_pred_2018,1,which.max)]
+
+preds_full_2018$max.prob <- max_prob_full_2018
+
+preds_full_2018$pred.right <- ifelse(preds_full_2018$max.prob == "Out" & preds_full_2018$outcome_ec == 0, "yes", 
+                                ifelse(preds_full_2018$max.prob == "Single" & preds_full_2018$outcome_ec == 1, "yes",
+                                       ifelse(preds_full_2018$max.prob == "Double" & preds_full_2018$outcome_ec == 2, "yes",
+                                              ifelse(preds_full_2018$max.prob == "Triple" & preds_full_2018$outcome_ec == 3, "yes",
+                                                     ifelse(preds_full_2018$max.prob == "Home_Run" & preds_full_2018$outcome_ec == 4, "yes", "no")))))
+preds_full_2018$pred.right <- as.factor(preds_full_2018$pred.right)
+
+sum(preds_full_2018$pred.right == "yes") / nrow(preds_full_2018) #0.8562713
+
+###### 2019
+xgb.full_pred_2019 = predict(full_mod_2019, full_dataset_x_2019, reshape=T)
+xgb.full_pred_2019 = as.data.frame(xgb.full_pred_2019)
+colnames(xgb.full_pred_2019) = c("Out", "Single", "Double", "Triple", "Home_Run")
+
+preds_full_2019 <- batted_ball_model_2019
+preds_full_2019$out.prob <- xgb.full_pred_2019[,1]
+preds_full_2019$single.prob <- xgb.full_pred_2019[,2]
+preds_full_2019$double.prob <- xgb.full_pred_2019[,3]
+preds_full_2019$triple.prob <- xgb.full_pred_2019[,4]
+preds_full_2019$hr.prob <- xgb.full_pred_2019[,5]
+
+max_prob_full_2019 <- colnames(xgb.full_pred_2019)[apply(xgb.full_pred_2019,1,which.max)]
+
+preds_full_2019$max.prob <- max_prob_full_2019
+
+preds_full_2019$pred.right <- ifelse(preds_full_2019$max.prob == "Out" & preds_full_2019$outcome_ec == 0, "yes", 
+                                ifelse(preds_full_2019$max.prob == "Single" & preds_full_2019$outcome_ec == 1, "yes",
+                                       ifelse(preds_full_2019$max.prob == "Double" & preds_full_2019$outcome_ec == 2, "yes",
+                                              ifelse(preds_full_2019$max.prob == "Triple" & preds_full_2019$outcome_ec == 3, "yes",
+                                                     ifelse(preds_full_2019$max.prob == "Home_Run" & preds_full_2019$outcome_ec == 4, "yes", "no")))))
+preds_full_2019$pred.right <- as.factor(preds_full_2019$pred.right)
+
+sum(preds_full_2019$pred.right == "yes") / nrow(preds_full_2019) #0.862459
+```
+
+
+This is where it gets fun. Like I mentioned in the opening, I'm going to follow a similar workflow to what Baseball Prospectus used for DRC+. The generalized linear mixed-effects models improved the accruacy of each model, oh so slightly, with increases between 0.002 and 0.004 percent. While the accuracy hardly increased, I think the model is much better off with including the batter and pitcher identity. It's important to note that there are 'no free lunches.' The generalized linear mixed-effects model for the 2015 season increased triple classifcation accuracy from 20.77% (XGBoost model) to 61.54% and increased double accuracy from 59.37% to 69%. But out classification accuracy declined from 93.14% to 91%. In a perfect world, all accuraries would increase in the new model, but that's not how things work unfortunately. Ultimately, I do think the trade-off is worth it.
+```{r}
+df.single <- preds_full_2015 %>%
+  filter(outcome_ec == 0 | outcome_ec == 1) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.double <- preds_full_2015 %>%
+  filter(outcome_ec == 0 | outcome_ec == 2) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.triple <- preds_full_2015 %>%
+  filter(outcome_ec == 0 | outcome_ec == 3) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.home_run <- preds_full_2015 %>%
+  filter(outcome_ec == 0 | outcome_ec == 4) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+
+glmer.single.mod.2015 <- glmer(
+  outcome ~
+    (1|pitcher_name) +
+    (1|player_name) +
+    logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.single,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.double.mod.2015 <- glmer(
+  outcome ~
+    (1|pitcher_name) +
+    (1|player_name) +     
+     logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.double,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.triple.mod.2015 <- glmer(
+  outcome ~
+    (1|pitcher_name) +
+    (1|player_name) +
+     logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.triple,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.home_run.mod.2015 <- glmer(
+  outcome ~
+    (1|pitcher_name) +
+    (1|player_name) + 
+    logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.home_run,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+
+df.preds_2015 <- preds_full_2015
+df.preds_2015$single_all_lp_bat <- predict(glmer.single.mod.2015, newdata=df.preds_2015,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2015$double_all_lp_bat <- predict(glmer.double.mod.2015, newdata=df.preds_2015,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2015$triple_all_lp_bat <- predict(glmer.triple.mod.2015, newdata=df.preds_2015,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2015$home_run_all_lp_bat <- predict(glmer.home_run.mod.2015, newdata=df.preds_2015,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+
+model.coef.2015 <- df.preds_2015 %>%
+  dplyr::mutate(
+    K_all = 1 + exp(single_all_lp_bat) + exp(double_all_lp_bat) + exp(triple_all_lp_bat) + exp(home_run_all_lp_bat),
+    outs_new.prob = 1 / K_all,
+    single_new.prob = exp(single_all_lp_bat) / K_all,
+    double_new.prob = exp(double_all_lp_bat) / K_all,
+    triple_new.prob = exp(triple_all_lp_bat) / K_all,
+    home_run_new.prob = exp(home_run_all_lp_bat) / K_all)
+
+model.coef.2015 %<>%
+  mutate(max.prob_ec = ifelse(outs_new.prob > single_new.prob & outs_new.prob > double_new.prob & outs_new.prob > triple_new.prob & outs_new.prob > home_run_new.prob, 0,
+                           ifelse(single_new.prob > outs_new.prob & single_new.prob > double_new.prob & single_new.prob > triple_new.prob & 
+                                    single_new.prob > home_run_new.prob, 1,
+                                  ifelse(double_new.prob > outs_new.prob & double_new.prob > single_new.prob & double_new.prob > triple_new.prob 
+                                         & double_new.prob > home_run_new.prob, 2,
+                                         ifelse(triple_new.prob > outs_new.prob & triple_new.prob > single_new.prob & triple_new.prob > double_new.prob &
+                                                  triple_new.prob > home_run_new.prob,  3, 4)))))
+
+model.coef.2015 %<>%
+  mutate(pred.right_new = ifelse(max.prob_ec == outcome_ec, "yes", "no"))
+
+sum(model.coef.2015$pred.right_new == "yes") / nrow((model.coef.2015)) #  xgb is 0.8544968 this is 0.8581859
+```
+
+```{r include=FALSE}
+############ 2016
+df.single <- preds_full_2016 %>%
+  filter(outcome_ec == 0 | outcome_ec == 1) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.double <- preds_full_2016 %>%
+  filter(outcome_ec == 0 | outcome_ec == 2) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.triple <- preds_full_2016 %>%
+  filter(outcome_ec == 0 | outcome_ec == 3) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.home_run <- preds_full_2016 %>%
+  filter(outcome_ec == 0 | outcome_ec == 4) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+
+glmer.single.mod.2016 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.single,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.double.mod.2016 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) + logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.double,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.triple.mod.2016 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.triple,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.home_run.mod.2016 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) + logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.home_run,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+
+df.preds_2016 <- preds_full_2016
+df.preds_2016$single_all_lp_bat <- predict(glmer.single.mod.2016, newdata=df.preds_2016,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2016$double_all_lp_bat <- predict(glmer.double.mod.2016, newdata=df.preds_2016,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2016$triple_all_lp_bat <- predict(glmer.triple.mod.2016, newdata=df.preds_2016,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2016$home_run_all_lp_bat <- predict(glmer.home_run.mod.2016, newdata=df.preds_2016,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+model.coef.2016 <- df.preds_2016 %>%
+  dplyr::mutate(
+    K_all = 1 + exp(single_all_lp_bat) + exp(double_all_lp_bat) + exp(triple_all_lp_bat) + exp(home_run_all_lp_bat),
+    outs_new.prob = 1 / K_all,
+    single_new.prob = exp(single_all_lp_bat) / K_all,
+    double_new.prob = exp(double_all_lp_bat) / K_all,
+    triple_new.prob = exp(triple_all_lp_bat) / K_all,
+    home_run_new.prob = exp(home_run_all_lp_bat) / K_all
+  )
+
+model.coef.2016 %<>%
+  mutate(max.prob_ec = ifelse(outs_new.prob > single_new.prob & outs_new.prob > double_new.prob & outs_new.prob > triple_new.prob & 
+                                outs_new.prob > home_run_new.prob, 0,
+                           ifelse(single_new.prob > outs_new.prob & single_new.prob > double_new.prob & single_new.prob > triple_new.prob & 
+                                    single_new.prob > home_run_new.prob, 1,
+                                  ifelse(double_new.prob > outs_new.prob & double_new.prob > single_new.prob & double_new.prob > triple_new.prob 
+                                         & double_new.prob > home_run_new.prob, 2,
+                                         ifelse(triple_new.prob > outs_new.prob & triple_new.prob > single_new.prob & triple_new.prob > double_new.prob &
+                                                  triple_new.prob > home_run_new.prob, 3, 4)))))
+
+model.coef.2016 %<>%
+  mutate(pred.right_new = ifelse(max.prob_ec == outcome_ec, "yes", "no"))
+
+sum(model.coef.2016$pred.right_new == "yes") / nrow((model.coef.2016)) #  xgb is 0.852469 this is 0.8548236
+
+############ 2017
+df.single <- preds_full_2017 %>%
+  filter(outcome_ec == 0 | outcome_ec == 1) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.double <- preds_full_2017 %>%
+  filter(outcome_ec == 0 | outcome_ec == 2) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.triple <- preds_full_2017 %>%
+  filter(outcome_ec == 0 | outcome_ec == 3) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.home_run <- preds_full_2017 %>%
+  filter(outcome_ec == 0 | outcome_ec == 4) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+
+glmer.single.mod.2017 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.single,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.double.mod.2017 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) + logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.double,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.triple.mod.2017 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.triple,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.home_run.mod.2017 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.home_run,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+
+df.preds_2017 <- preds_full_2017
+df.preds_2017$single_all_lp_bat <- predict(glmer.single.mod.2017, newdata=df.preds_2017,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2017$double_all_lp_bat <- predict(glmer.double.mod.2017, newdata=df.preds_2017,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2017$triple_all_lp_bat <- predict(glmer.triple.mod.2017, newdata=df.preds_2017,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2017$home_run_all_lp_bat <- predict(glmer.home_run.mod.2017, newdata=df.preds_2017,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+model.coef.2017 <- df.preds_2017 %>%
+  dplyr::mutate(
+    K_all = 1 + exp(single_all_lp_bat) + exp(double_all_lp_bat) + exp(triple_all_lp_bat) + exp(home_run_all_lp_bat),
+    outs_new.prob = 1 / K_all,
+    single_new.prob = exp(single_all_lp_bat) / K_all,
+    double_new.prob = exp(double_all_lp_bat) / K_all,
+    triple_new.prob = exp(triple_all_lp_bat) / K_all,
+    home_run_new.prob = exp(home_run_all_lp_bat) / K_all
+  )
+
+model.coef.2017 %<>%
+  mutate(max.prob_ec = ifelse(outs_new.prob > single_new.prob & outs_new.prob > double_new.prob & outs_new.prob > triple_new.prob & 
+                                outs_new.prob > home_run_new.prob, 0,
+                           ifelse(single_new.prob > outs_new.prob & single_new.prob > double_new.prob & single_new.prob > triple_new.prob & 
+                                    single_new.prob > home_run_new.prob, 1,
+                                  ifelse(double_new.prob > outs_new.prob & double_new.prob > single_new.prob & double_new.prob > triple_new.prob 
+                                         & double_new.prob > home_run_new.prob, 2,
+                                         ifelse(triple_new.prob > outs_new.prob & triple_new.prob > single_new.prob & triple_new.prob > double_new.prob &
+                                                  triple_new.prob > home_run_new.prob, 3, 4)))))
+
+model.coef.2017 %<>%
+  mutate(pred.right_new = ifelse(max.prob_ec == outcome_ec, "yes", "no"))
+
+sum(model.coef.2017$pred.right_new == "yes") / nrow((model.coef.2017)) # xgb is 0.8606125 this is 0.8640349
+
+############ 2018
+df.single <- preds_full_2018 %>%
+  filter(outcome_ec == 0 | outcome_ec == 1) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.double <- preds_full_2018 %>%
+  filter(outcome_ec == 0 | outcome_ec == 2) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.triple <- preds_full_2018 %>%
+  filter(outcome_ec == 0 | outcome_ec == 3) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.home_run <- preds_full_2018 %>%
+  filter(outcome_ec == 0 | outcome_ec == 4) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+
+glmer.single.mod.2018 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.single,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.double.mod.2018 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.double,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.triple.mod.2018 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.triple,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.home_run.mod.2018 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.home_run,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+
+df.preds_2018 <- preds_full_2018
+df.preds_2018$single_all_lp_bat <- predict(glmer.single.mod.2018, newdata=df.preds_2018,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2018$double_all_lp_bat <- predict(glmer.double.mod.2018, newdata=df.preds_2018,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2018$triple_all_lp_bat <- predict(glmer.triple.mod.2018, newdata=df.preds_2018,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2018$home_run_all_lp_bat <- predict(glmer.home_run.mod.2018, newdata=df.preds_2018,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+model.coef.2018 <- df.preds_2018 %>%
+  dplyr::mutate(
+    K_all = 1 + exp(single_all_lp_bat) + exp(double_all_lp_bat) + exp(triple_all_lp_bat) + exp(home_run_all_lp_bat),
+    outs_new.prob = 1 / K_all,
+    single_new.prob = exp(single_all_lp_bat) / K_all,
+    double_new.prob = exp(double_all_lp_bat) / K_all,
+    triple_new.prob = exp(triple_all_lp_bat) / K_all,
+    home_run_new.prob = exp(home_run_all_lp_bat) / K_all
+  )
+
+model.coef.2018 %<>%
+  mutate(max.prob_ec = ifelse(outs_new.prob > single_new.prob & outs_new.prob > double_new.prob & outs_new.prob > triple_new.prob & 
+                                outs_new.prob > home_run_new.prob, 0,
+                           ifelse(single_new.prob > outs_new.prob & single_new.prob > double_new.prob & single_new.prob > triple_new.prob & 
+                                    single_new.prob > home_run_new.prob, 1,
+                                  ifelse(double_new.prob > outs_new.prob & double_new.prob > single_new.prob & double_new.prob > triple_new.prob 
+                                         & double_new.prob > home_run_new.prob, 2,
+                                         ifelse(triple_new.prob > outs_new.prob & triple_new.prob > single_new.prob & triple_new.prob > double_new.prob &
+                                                  triple_new.prob > home_run_new.prob, 3, 4)))))
+
+model.coef.2018 %<>%
+  mutate(pred.right_new = ifelse(max.prob_ec == outcome_ec, "yes", "no"))
+
+sum(model.coef.2018$pred.right_new == "yes") / nrow((model.coef.2018)) # xgb is 0.8562713 this is 0.8590864
+
+############ 2019
+df.single <- preds_full_2019 %>%
+  filter(outcome_ec == 0 | outcome_ec == 1) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.double <- preds_full_2019 %>%
+  filter(outcome_ec == 0 | outcome_ec == 2) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.triple <- preds_full_2019 %>%
+  filter(outcome_ec == 0 | outcome_ec == 3) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+df.home_run <- preds_full_2019 %>%
+  filter(outcome_ec == 0 | outcome_ec == 4) %>%
+  mutate(outcome = ifelse(outcome_ec == 0, 0, 1))
+
+glmer.single.mod.2019 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.single,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.double.mod.2019 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) + logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.double,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.triple.mod.2019 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.triple,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+glmer.home_run.mod.2019 <- glmer(
+  outcome ~
+    (1|pitcher_name) + (1|player_name) +  logit(out.prob) + logit(single.prob) + logit(double.prob) + logit(triple.prob) + logit(hr.prob),
+  data=df.home_run,
+  family=binomial(link = "probit"),
+  nAGQ=0)
+
+df.preds_2019 <- preds_full_2019
+df.preds_2019$single_all_lp_bat <- predict(glmer.single.mod.2019, newdata=df.preds_2019,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2019$double_all_lp_bat <- predict(glmer.double.mod.2019, newdata=df.preds_2019,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2019$triple_all_lp_bat <- predict(glmer.triple.mod.2019, newdata=df.preds_2019,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+df.preds_2019$home_run_all_lp_bat <- predict(glmer.home_run.mod.2019, newdata=df.preds_2019,
+                                    allow.new.levels = TRUE, type='link', re.form=~(1|player_name))
+model.coef.2019 <- df.preds_2019 %>%
+  dplyr::mutate(
+    K_all = 1 + exp(single_all_lp_bat) + exp(double_all_lp_bat) + exp(triple_all_lp_bat) + exp(home_run_all_lp_bat),
+    outs_new.prob = 1 / K_all,
+    single_new.prob = exp(single_all_lp_bat) / K_all,
+    double_new.prob = exp(double_all_lp_bat) / K_all,
+    triple_new.prob = exp(triple_all_lp_bat) / K_all,
+    home_run_new.prob = exp(home_run_all_lp_bat) / K_all
+  )
+
+model.coef.2019 %<>%
+  mutate(max.prob_ec = ifelse(outs_new.prob > single_new.prob & outs_new.prob > double_new.prob & outs_new.prob > triple_new.prob & 
+                                outs_new.prob > home_run_new.prob, 0,
+                           ifelse(single_new.prob > outs_new.prob & single_new.prob > double_new.prob & single_new.prob > triple_new.prob & 
+                                    single_new.prob > home_run_new.prob, 1,
+                                  ifelse(double_new.prob > outs_new.prob & double_new.prob > single_new.prob & double_new.prob > triple_new.prob 
+                                         & double_new.prob > home_run_new.prob, 2,
+                                         ifelse(triple_new.prob > outs_new.prob & triple_new.prob > single_new.prob & triple_new.prob > double_new.prob &
+                                                  triple_new.prob > home_run_new.prob, 3, 4)))))
+
+model.coef.2019 %<>%
+  mutate(pred.right_new = ifelse(max.prob_ec == outcome_ec, "yes", "no"))
+
+sum(model.coef.2019$pred.right_new == "yes") / nrow((model.coef.2019)) # xgb is 0.862459 this is 0.8668654
+```
+
+Now, after all of that, I'm actually going to make the metric. 
+```{r}
+woba_weights_2015 <- c(0, .881,	1.256, 1.594, 2.065) # from FanGraphs
+
+model.coef.2015 %<>%
+  mutate(expected_woba = (outs_new.prob * woba_weights_2015[1]) + (single_new.prob * woba_weights_2015[2]) + (double_new.prob * woba_weights_2015[3]) + 
+           (triple_new.prob * woba_weights_2015[4]) + (home_run_new.prob * woba_weights_2015[5]))
+
+model.coef.2015$percentile <- 100 * (scales::rescale(model.coef.2015$expected_woba, to=c(0,1)))
+model.coef.2015$qcp <- psych::rescale(model.coef.2015$percentile, mean = 100, sd = 30, df=F)
+```
+
+```{r include=FALSE}
+# all from FanGraphs
+woba_weights_2016 <- c(0, .878,	1.242, 1.569,	2.015)
+woba_weights_2017 <- c(0, .877, 1.232, 1.552, 1.980) 
+woba_weights_2018 <- c(0, .880, 1.247, 1.578, 2.031)
+woba_weights_2019 <- c(0, .870, 1.217, 1.529, 1.940)
+
+#### 2016
+model.coef.2016 %<>%
+  mutate(expected_woba = (outs_new.prob * woba_weights_2016[1]) + (single_new.prob * woba_weights_2016[2]) + (double_new.prob * woba_weights_2016[3]) + 
+           (triple_new.prob * woba_weights_2016[4]) + (home_run_new.prob * woba_weights_2016[5]))
+           
+model.coef.2016$percentile <- 100 * (scales::rescale(model.coef.2016$expected_woba, to=c(0,1)))
+model.coef.2016$qcp <- psych::rescale(model.coef.2016$percentile, mean = 100, sd = 30, df=F)
+
+### 2017
+model.coef.2017 %<>%
+  mutate(expected_woba = (outs_new.prob * woba_weights_2017[1]) + (single_new.prob * woba_weights_2017[2]) + (double_new.prob * woba_weights_2017[3]) + 
+           (triple_new.prob * woba_weights_2017[4]) + (home_run_new.prob * woba_weights_2017[5]))
+           
+model.coef.2017$percentile <- 100 * (scales::rescale(model.coef.2017$expected_woba, to=c(0,1)))
+model.coef.2017$qcp <- psych::rescale(model.coef.2017$percentile, mean = 100, sd = 30, df=F)
+
+### 2018
+model.coef.2018 %<>%
+  mutate(expected_woba = (outs_new.prob * woba_weights_2018[1]) + (single_new.prob * woba_weights_2018[2]) + (double_new.prob * woba_weights_2018[3]) + 
+           (triple_new.prob * woba_weights_2018[4]) + (home_run_new.prob * woba_weights_2018[5]))
+           
+
+model.coef.2018$percentile <- 100 * (scales::rescale(model.coef.2018$expected_woba, to=c(0,1)))
+model.coef.2018$qcp <- psych::rescale(model.coef.2018$percentile, mean = 100, sd = 30, df=F)
+
+### 2019
+model.coef.2019 %<>%
+  mutate(expected_woba = (outs_new.prob * woba_weights_2019[1]) + (single_new.prob * woba_weights_2019[2]) + (double_new.prob * woba_weights_2019[3]) + 
+           (triple_new.prob * woba_weights_2019[4]) + (home_run_new.prob * woba_weights_2019[5]))
+           
+model.coef.2019$percentile <- 100 * (scales::rescale(model.coef.2019$expected_woba, to=c(0,1)))
+model.coef.2019$qcp <- psych::rescale(model.coef.2019$percentile, mean = 100, sd = 30, df=F)
+```
+
+```{r include=FALSE}
+batted_ball_results_2015 <- model.coef.2015
+batted_ball_results_2016 <- model.coef.2016
+batted_ball_results_2017 <- model.coef.2017
+batted_ball_results_2018 <- model.coef.2018
+batted_ball_results_2019 <- model.coef.2019
+```
