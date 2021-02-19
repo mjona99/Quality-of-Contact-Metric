@@ -17,4 +17,4 @@ Links to published notebooks:
 [Part 4 - Metric Validation](https://rpubs.com/micahjona/qcp_p4)
 
 To do:
-- [ ] Make a less technical blog post
+- [ ] Turn this into one blog post
