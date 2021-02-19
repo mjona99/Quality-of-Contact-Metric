@@ -6,7 +6,7 @@ A couple of weeks ago, as part of a technical assessment for an application with
 
 In this notebook, I will focus on data acquisition and cleaning. In subsequent posts, I will go through the rest of the data science process. Feature engineering and selection, model selection and validation, and then lastly metric creation, results, and further analysis.
 
-First, start by loading in libraries.
+I first start by loading in libraries.
 ```{r message=FALSE, warning=FALSE}
 library(baseballr)
 library(magrittr)
@@ -77,7 +77,7 @@ batted_ball_data <- rbind(batted_ball_15, batted_ball_16, batted_ball_17, batted
 rm(batted_ball_15, batted_ball_16, batted_ball_17, batted_ball_18, batted_ball_19)
 ```
 
-First, I'm going to remove all batted balls that have null values for exit velocity or launch angle.
+I'm first going to remove all batted balls that have null values for exit velocity or launch angle.
 ```{r}
 batted_ball_data %<>%
   filter(!is.na(launch_speed) | !is.na(launch_angle))
@@ -100,10 +100,10 @@ ggplot(batted_ball_data, aes(x = launch_angle)) +
         axis.ticks.y=element_blank())
 ```
 
-We can see that there are three local peaks that wouldn't be expected from a continous variable in a datset of this size. You may ask why does the distribution look like this. The answer is the 'no nulls' batted balls.
+We can see that there are three local peaks that normally wouldn't be expected from a continous variable in a datset of this size. You may ask why does the distribution look like this. The answer is the 'no nulls' batted balls.
 
 
-Here is every unique combination of exit velocity and launch angle from 2015-2019. There are 306,301 unique combinations of exit velocity and launch angle, from a sample of 629,905 batted balls. 
+Here is every combination of exit velocity and launch angle from 2015-2019. There are 306,301 unique combinations of exit velocity and launch angle, from a sample of 629,905 batted balls. 
 
 ```{r message=FALSE, warning=FALSE}
 ev_la_combos <- batted_ball_data %>%
@@ -111,14 +111,12 @@ ev_la_combos <- batted_ball_data %>%
   summarise(num = n()) %>%
   arrange(desc(num))
 ev_la_combos
-
-ev_la_combos %>% filter(num < 6)
 ```
 
 
 Out of those 306,301 combinations, 171,601 (56.02%) of the combinations only have one observation. So we can see that a majority of batted balls are at unique exit velocities and launch angles. From 2015-2019 there were 1,762 unique launch angles and 1,043 unique exit velocities. From a probabilitiy point of view, the likelihood of two batted balls having the exact same exit velocity and launch angle is pretty unlikely.
 
-Five is the magic number that Perpetua chose in his article. Five or more observations of exit velocity and launch angle combination he deemed to be 'no nulls.' I follow a similar process as 300,095 (97.97%) of the combinations have five or less observations. So, I'm going to remove all observations of launch angle and exit velocity that occur **more** than five times. 
+Five is the magic number that Perpetua chose in his article. Five or more observations of exit velocity and launch angle combination he deemed to be 'no nulls.' I'm following a similar process as 300,095 (97.97%) of the combinations have five or less observations. So, I'm going to remove all observations of launch angle and exit velocity that occur **more** than five times. 
 
 ```{r message=FALSE, warning=FALSE}
 ev_la_bb.type_combos <- batted_ball_data %>%
@@ -175,13 +173,13 @@ rm(popup_combos_to_remove, flyball_combos_to_remove, linedrive_combos_to_remove,
 to_be_removed
 ```
 
-A vast majority (~72%) of batted balls to be removed are either popups or ground balls. This confirms what Perpetua mentions in his article, "... not only does TrackMan have a bias against certain types of batted balls, but these batted balls are generally very weakly hit ground balls and pop-ups."
+A vast majority (~72%) of batted balls to be removed are either popups or ground balls. This confirms what Perpetua mentioned in his article, "... not only does TrackMan have a bias against certain types of batted balls, but these batted balls are generally very weakly hit ground balls and pop-ups."
 
 In total, I'm going to remove 98,746 batted balls from the dataset. This represents about 15% of the original dataset. I have no problem with people who would argue that this removal criteria is too strict or is too unexact. However, when working with unperfect data (like we are), sometimes it's better to have an overarching philosphy rather than try to nit-pick about information that we don't have.
 
 
 ```{r}
-# Removing 'no nulls'
+# removing 'no nulls'
 batted_ball_cleaned <- dplyr::anti_join(batted_ball_data, to_be_removed, by = c("launch_speed", "launch_angle", "bb_type"))
 ```
 
@@ -233,7 +231,7 @@ ggplot(data = batted_ball_data, aes(x=launch_angle)) +
 ```
 
 
-An astute reader might have noticed that a vast majority of the removed batted balls are poorly hit. Therefore, by removing these, generally, weaker hit balls then the creation of a quality of contact metric will favor the batters who had more weakly hit balls than those who didn't. By removing a player's worse hit balls they look a lot better. And that is true. However, the bias I've introduced is a necessary evil. We have to work with and accept it, it's better to work with accurate (i.e. meassured) data than not. It's important to keep that in mind when analyzing the results of the metric, but I believe this is the correct way of handling this analysis.
+An astute reader might have noticed that a vast majority of the removed batted balls are poorly hit. Therefore, by removing these, generally, weaker hit balls then the creation of a quality of contact metric will favor the batters who had more weakly hit balls than those who didn't. By removing a player's worse hit balls they look a lot better. And that is true. However, the bias I've introduced is a necessary evil. We have to work with and accept it. It's better to work with accurate (i.e. meassured) data than not. It's important to keep that in mind when analyzing the results of the metric, but I believe this is the correct way of handling this analysis.
 
 Here's a quick little visualization showing the type of bias inflicted. Removing the 'no nulls' helps Alexi Amarista and J.J. Hardy a lot more than Aaron Judge and Franmil Reyes. 
 ```{r message=FALSE, warning=FALSE}
@@ -263,6 +261,6 @@ joined %>%
 ```
 
 
-```{r}
+```{r include=FALSE}
 write.csv(batted_ball_cleaned, "batted_ball_cleaned_v2.csv")
 ```
