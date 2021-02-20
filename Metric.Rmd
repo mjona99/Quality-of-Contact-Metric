@@ -1,0 +1,135 @@
+---
+title: "Contextualizing QC+"
+output: html_notebook
+---
+
+```{r}
+all_results <- rbind(batted_ball_results_2015, batted_ball_results_2016, batted_ball_results_2017,batted_ball_results_2018, batted_ball_results_2019)
+```
+
+**Best batter seasons by QC+**
+```{r message=FALSE, warning=FALSE}
+all_results %>%
+  group_by(game_year, player_name) %>%
+  summarise(bbe = n(),
+            avg_qcp = mean(qcp)) %>%
+  filter(bbe > 150) %>%
+  arrange(desc(avg_qcp))
+```
+
+**Worst batter seasons by QC+**
+```{r message=FALSE, warning=FALSE}
+all_results %>%
+  group_by(game_year, player_name) %>%
+  summarise(bbe = n(),
+            avg_qcp = mean(qcp)) %>%
+  filter(bbe > 150) %>%
+  arrange((avg_qcp))
+```
+
+**Best pitcher seasons by QC+**
+```{r message=FALSE, warning=FALSE}
+all_results %>%
+  group_by(game_year, pitcher_name) %>%
+  summarise(bbe = n(),
+            avg_qcp = mean(qcp)) %>%
+  filter(bbe > 150) %>%
+  arrange(avg_qcp)
+```
+
+**Worst pitcher seasons by QC+**
+```{r message=FALSE, warning=FALSE}
+all_results %>%
+  group_by(game_year, pitcher_name) %>%
+  summarise(bbe = n(),
+            avg_qcp = mean(qcp)) %>%
+  filter(bbe > 150) %>%
+  arrange(desc(avg_qcp))
+```
+
+**Bested batted from each season**
+```{r}
+for(i in 2015:2019) {
+  best_hit <- all_results %>%
+    filter(game_year == i) %>%
+    dplyr::select(c(player_name, pitcher_name, qcp, game_date)) %>%
+    arrange(desc(qcp)) %>%
+    slice_head(n = 1)  
+  print(best_hit)
+  }
+```
+
+Video of Donaldson's hit: https://baseballsavant.mlb.com/sporty-videos?playId=4ceff1ef-1e40-4e49-b582-4eaad6b7006e
+
+Video of Cordero's hit: https://baseballsavant.mlb.com/sporty-videos?playId=77b2fd12-d05a-493b-8954-a6e612e93b2c
+
+Video of Sano's hit: https://baseballsavant.mlb.com/sporty-videos?playId=13ac292c-026f-4cb3-999a-a5126148356a
+
+**Worst batted from each season**
+```{r}
+for(i in 2015:2019) {
+  best_hit <- all_results %>%
+    filter(game_year == i) %>%
+    dplyr::select(c(player_name, pitcher_name, qcp, game_date)) %>%
+    arrange((qcp)) %>%
+    slice_head(n = 1)  
+  print(best_hit)
+  }
+```
+
+Video of Chapman's hit: https://baseballsavant.mlb.com/sporty-videos?playId=a6d2491d-7554-4b11-8384-9889a781d31b
+
+Video of Hamilton's hit: https://baseballsavant.mlb.com/sporty-videos?playId=1d5503f2-9c8e-4931-80d0-2a5cd890e26e
+
+Video of Kendrick's hit: https://baseballsavant.mlb.com/sporty-videos?playId=429238c5-6d56-47c9-84a6-d3c589ceaaa8
+
+
+**Best ball by QC+ that was an out**
+```{r}
+for(i in 2015:2019) {
+  best_qcp_out <- all_results %>%
+    filter(game_year == i) %>%
+    filter(outcome_ec == 0) %>%
+    dplyr::select(c(player_name, pitcher_name, qcp, game_date)) %>%
+    arrange(desc(qcp)) %>%
+    slice_head(n = 1)  
+  print(best_qcp_out)
+  }
+```
+
+Video of Lindor's out: https://baseballsavant.mlb.com/sporty-videos?playId=2f4d7da4-0861-4caa-9310-4476cd18389e - you can see the wind (an unaccounted variable) affecting the ball!
+
+Video of Brantley's out: https://baseballsavant.mlb.com/sporty-videos?playId=84def108-5b88-47e2-91e2-8ba848d0ba09 - the wind also had a major impact here. The announcers thought it was a no-doubter
+
+Video of Garcia's out: https://baseballsavant.mlb.com/sporty-videos?playId=d7694a58-6658-4266-aaf3-3ea213b611de
+
+
+**Worst ball by QC+ that was a home run**
+```{r}
+for(i in 2017:2019) {
+  best_qcp_out <- all_results %>%
+    filter(game_year == i) %>%
+    filter(outcome_ec == 4) %>%
+    dplyr::select(c(player_name, pitcher_name, qcp, game_date)) %>%
+    arrange((qcp)) %>%
+    slice_head(n = 1)  
+  print(best_qcp_out)
+  }
+```
+
+Video of Amarista's home run: https://baseballsavant.mlb.com/sporty-videos?playId=71b57e87-c1dc-4b98-922f-ec33ba083b60
+
+Video of Wieters' home run: https://baseballsavant.mlb.com/sporty-videos?playId=c01ba1f6-d3ec-42e4-9c37-b69a4a7780c4
+
+Video of Choo's home run: https://baseballsavant.mlb.com/sporty-videos?playId=63d09954-439f-4698-b308-10eb9df0acb2
+
+
+**Average QC+ by venue and batter handedness**
+```{r message=FALSE, warning=FALSE}
+all_results %>%
+  group_by(venue_batter.stand) %>%
+  summarise(bbe = n(),
+            avg_qcp = mean(qcp)) %>%
+  arrange(desc(avg_qcp))
+```
+
